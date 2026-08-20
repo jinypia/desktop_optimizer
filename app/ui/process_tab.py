@@ -34,34 +34,60 @@ class _NumItem(QTableWidgetItem):
         return (self.data(Qt.UserRole) or 0) < (other.data(Qt.UserRole) or 0)
 
 
-def _scan_processes():
+def _scan_processes(cache: dict):
+    """Full process scan using a PRIVATE Process cache.
+
+    psutil.process_iter shares cached objects (and their .info dicts)
+    globally — using it here would race the sampler thread's iteration
+    and cross-reset per-process cpu_percent baselines. A private cache
+    keeps this scan independent.
+    """
     ncpu = psutil.cpu_count(logical=True) or 1
     prio_names = {v: k for k, v in optimizer.PRIORITY_CLASSES.items()}
+    alive = set(psutil.pids())
+    for pid in list(cache):
+        if pid not in alive:
+            del cache[pid]
     rows = []
-    for p in psutil.process_iter(["pid", "name", "username", "memory_info",
-                                  "num_threads", "create_time"]):
-        try:
-            if p.info["pid"] == 0:
-                continue
-            cpu = p.cpu_percent(None) / ncpu
-            user = (p.info["username"] or "").split("\\")[-1]
-            mem = p.info["memory_info"]
+    for pid in alive:
+        if pid == 0:
+            continue
+        p = cache.get(pid)
+        if p is None:
             try:
-                prio = prio_names.get(p.nice(), "")
+                p = psutil.Process(pid)
             except psutil.Error:
-                prio = ""
-            rows.append({
-                "pid": p.info["pid"],
-                "name": p.info["name"] or "?",
-                "user": user,
-                "cpu": cpu,
-                "rss": mem.rss if mem else 0,
-                "threads": p.info["num_threads"] or 0,
-                "prio": prio,
-                "started": p.info["create_time"] or 0.0,
-            })
+                continue
+            cache[pid] = p
+        try:
+            with p.oneshot():
+                name = p.name() or "?"
+                cpu = p.cpu_percent(None) / ncpu
+                try:
+                    rss = p.memory_info().rss
+                except psutil.Error:
+                    rss = 0
+                try:
+                    user = (p.username() or "").split("\\")[-1]
+                except psutil.Error:
+                    user = ""
+                try:
+                    threads = p.num_threads()
+                except psutil.Error:
+                    threads = 0
+                try:
+                    prio = prio_names.get(p.nice(), "")
+                except psutil.Error:
+                    prio = ""
+                try:
+                    started = p.create_time()
+                except psutil.Error:
+                    started = 0.0
         except psutil.Error:
             continue
+        rows.append({"pid": pid, "name": name, "user": user, "cpu": cpu,
+                     "rss": rss, "threads": threads, "prio": prio,
+                     "started": started})
     return rows
 
 
@@ -73,6 +99,7 @@ class ProcessTab(QWidget):
         self._pool = QThreadPool.globalInstance()
         self._scanning = False
         self._active = False
+        self._proc_cache = {}          # pid -> psutil.Process (private)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 8, 4, 4)
@@ -137,7 +164,7 @@ class ProcessTab(QWidget):
         if self._scanning:
             return
         self._scanning = True
-        worker = Worker(_scan_processes)
+        worker = Worker(lambda: _scan_processes(self._proc_cache))
         worker.signals.done.connect(self._scan_done)
         self._pool.start(worker)
 
