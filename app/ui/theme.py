@@ -85,4 +85,42 @@ QMenu {{
     border: 1px solid rgba(255,255,255,26);
 }}
 QMenu::item:selected {{ background: #2e2e2c; color: {TEXT}; }}
+QTabWidget::pane {{ border: none; }}
+QTabBar::tab {{
+    background: transparent; color: {MUTED};
+    padding: 7px 16px; border: none; font-size: 13px;
+}}
+QTabBar::tab:selected {{
+    color: {TEXT}; border-bottom: 2px solid {SERIES_CPU}; font-weight: 600;
+}}
+QTabBar::tab:hover:!selected {{ color: {TEXT_2}; }}
+QGroupBox {{
+    background: {SURFACE};
+    border: 1px solid rgba(255,255,255,18);
+    border-radius: 8px; margin-top: 10px; padding-top: 8px;
+    color: {TEXT_2};
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin; left: 10px; padding: 0 4px;
+    color: {MUTED}; font-size: 11px; letter-spacing: 1px;
+}}
+QProgressBar {{
+    background: #242423; border: none; border-radius: 3px;
+}}
+QProgressBar::chunk {{ background: {SERIES_CPU}; border-radius: 3px; }}
+QLineEdit, QComboBox {{
+    background: #242423; color: {TEXT};
+    border: 1px solid rgba(255,255,255,26);
+    border-radius: 6px; padding: 5px 8px;
+}}
+QComboBox::drop-down {{ border: none; width: 18px; }}
+QComboBox QAbstractItemView {{
+    background: {SURFACE}; color: {TEXT_2};
+    border: 1px solid rgba(255,255,255,26);
+    selection-background-color: #2e2e2c;
+}}
+QLabel#detailKey {{ color: {MUTED}; font-size: 11px; }}
+QLabel#detailValue {{ color: {TEXT_2}; font-size: 12px; }}
+QScrollArea {{ background: transparent; border: none; }}
+QScrollArea > QWidget > QWidget {{ background: transparent; }}
 """

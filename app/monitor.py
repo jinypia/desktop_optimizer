@@ -56,6 +56,11 @@ class Snapshot:
     top_cpu: list
     top_mem: list
     uptime_s: float
+    ctx_per_s: float = 0.0
+    intr_per_s: float = 0.0
+    syscalls_per_s: float = 0.0
+    proc_count: int = 0
+    battery: tuple | None = None   # (percent, plugged, secs_left) or None
 
 
 class MetricsSampler(QThread):
@@ -87,6 +92,7 @@ class MetricsSampler(QThread):
                 pass
         last_disk = psutil.disk_io_counters()
         last_net = psutil.net_io_counters()
+        last_cpu_stats = psutil.cpu_stats()
         last_t = time.monotonic()
 
         while not self._stop:
@@ -97,14 +103,14 @@ class MetricsSampler(QThread):
             dt = max(now - last_t, 1e-3)
             last_t = now
             try:
-                snap, last_disk, last_net = self._collect(ncpu, dt, last_disk,
-                                                          last_net)
+                snap, last_disk, last_net, last_cpu_stats = self._collect(
+                    ncpu, dt, last_disk, last_net, last_cpu_stats)
             except Exception:
                 log.exception("Sampling cycle failed — skipping this cycle")
                 continue
             self.sample.emit(snap)
 
-    def _collect(self, ncpu, dt, last_disk, last_net):
+    def _collect(self, ncpu, dt, last_disk, last_net, last_cpu_stats):
         per_core = psutil.cpu_percent(None, percpu=True) or [0.0]
         cpu = sum(per_core) / len(per_core)
         try:
@@ -161,6 +167,18 @@ class MetricsSampler(QThread):
         top_cpu = sorted(procs, key=lambda x: x.cpu, reverse=True)[:config.TOP_PROCESS_COUNT]
         top_mem = sorted(procs, key=lambda x: x.rss, reverse=True)[:config.TOP_PROCESS_COUNT]
 
+        stats = psutil.cpu_stats()
+        ctx_per_s = max(0.0, (stats.ctx_switches - last_cpu_stats.ctx_switches) / dt)
+        intr_per_s = max(0.0, (stats.interrupts - last_cpu_stats.interrupts) / dt)
+        syscalls_per_s = max(0.0, (stats.syscalls - last_cpu_stats.syscalls) / dt)
+
+        try:
+            batt = psutil.sensors_battery()
+            battery = ((batt.percent, batt.power_plugged, batt.secsleft)
+                       if batt else None)
+        except Exception:
+            battery = None
+
         snap = Snapshot(
             ts=time.time(), cpu=cpu, per_core=per_core, freq_mhz=freq_mhz,
             mem_percent=vm.percent, mem_used=vm.used, mem_total=vm.total,
@@ -170,8 +188,11 @@ class MetricsSampler(QThread):
             net_recv_bps=net_recv_bps, net_sent_bps=net_sent_bps,
             volumes=volumes, top_cpu=top_cpu, top_mem=top_mem,
             uptime_s=time.time() - psutil.boot_time(),
+            ctx_per_s=ctx_per_s, intr_per_s=intr_per_s,
+            syscalls_per_s=syscalls_per_s,
+            proc_count=len(procs) + 1, battery=battery,
         )
-        return snap, disk, net
+        return snap, disk, net, stats
 
     def _sleep(self, seconds: float):
         end = time.monotonic() + seconds

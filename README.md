@@ -56,17 +56,42 @@ completely, right-click the tray icon and choose **Exit**.
 
 ## Using the program
 
-### Reading the dashboard
+The window has four tabs on the left and an always-visible health panel on
+the right (status, alerts with recommendations, top CPU processes).
+
+### Dashboard tab
 
 - **Stat cards (top row)** — current CPU %, memory use, disk activity, and
   **Responsiveness**: the measured UI event-loop delay in milliseconds.
   This is the "does the desktop feel slow?" number — under ~80 ms is
   smooth.
-- **Charts (left)** — the last ~6 minutes of CPU, memory, disk-busy, and
-  network history. Hover over any chart for an exact value readout at that
-  point in time.
-- **Top processes (right)** — the processes using the most CPU right now,
-  with their memory use.
+- **Charts** — the last ~6 minutes of CPU, memory, disk-busy, and network
+  history. Hover over any chart for an exact value readout at that point
+  in time.
+
+### Details tab (professional view)
+
+- **System** — hostname, user, OS build, CPU model, core/thread count,
+  RAM, boot time, uptime.
+- **CPU per core** — live utilization bar per logical core.
+- **Kernel activity** — context switches/s, system calls/s, interrupts/s,
+  process count, UI latency.
+- **Memory** — in use / available / pagefile (swap) / battery state.
+- **Volumes & Network** — per-drive capacity and per-interface IPv4,
+  live up/down rates, and total transferred.
+
+Heavy queries only run while this tab is open.
+
+### Processes tab
+
+The full process list — name, PID, user, CPU %, memory, threads, priority,
+start time — refreshed every 3 s while visible. Click a column to sort,
+type in the filter box to search. Select a row, then:
+
+- **End process** / **End process tree** — terminates the app (with
+  confirmation; children included for "tree").
+- **Set priority** — choose Low → High and apply. Access-denied means the
+  target is a system/elevated process; use *Restart as administrator*.
 
 ### Alerts and recommendations
 
@@ -85,18 +110,25 @@ notification from the tray, so you don't need the window open. Each
 degradation episode produces exactly one alert; a recovery entry is added
 when the metric returns to normal.
 
-### One-click optimize actions
+### Optimize tab — one-click actions
 
 All actions are manual — click a button, and the result is reported in the
-log beneath the buttons:
+log at the bottom. **Run all safe cleanups** chains the starred ones.
 
 | Action | What it does |
 |---|---|
-| **Clear temp files** | Deletes temp files untouched for 24+ hours (files in use or recent are skipped). The button shows the reclaimable size. |
-| **Empty Recycle Bin** | Empties the bin; the button shows its current size. |
-| **Flush DNS cache** | Clears the Windows DNS resolver cache (helps after network/VPN changes). |
-| **Trim process memory** | Asks Windows to trim process working sets. Safe and reversible — pages return on demand. |
-| **Restart Explorer…** | Restarts the Windows shell (fixes a frozen taskbar). Asks for confirmation because open folder windows close. |
+| **Clear temp files** ★ | Deletes temp files untouched for 24+ hours (in-use/recent files skipped). Button shows the reclaimable size. |
+| **Empty Recycle Bin** ★ | Empties the bin; the button shows its current size. |
+| **Clear browser caches** ★ | Chrome / Edge / Firefox HTTP caches. Close browsers first for a full clean. |
+| **Clear thumbnail cache** | Explorer thumbnail/icon caches — fixes stale thumbnails. Locked files need an Explorer restart first. |
+| **Clear crash dumps & error reports** ★ | Old crash dumps and Windows Error Reporting queues from your profile. |
+| **Trim process memory** ★ | Asks Windows to trim process working sets. Safe — pages return on demand. |
+| **Purge standby memory** | Drops cached standby pages so they become immediately free. Requires administrator. |
+| **Flush DNS cache** ★ | Clears the DNS resolver cache (helps after network/VPN changes). |
+| **Switch power plan** | Toggles Balanced ⇄ High performance (some modern-standby laptops hide High performance). |
+| **Restart graphics driver** | Sends Win+Ctrl+Shift+B — fixes display glitches; the screen flashes briefly. |
+| **Restart Explorer** | Restarts the Windows shell (fixes a frozen taskbar). Asks for confirmation. |
+| **Restart as administrator…** | Relaunches the app elevated (UAC prompt) to enable admin-only actions and control of elevated processes. |
 
 ### Tray icon
 
@@ -135,7 +167,11 @@ app/
   ui/
     theme.py            dark theme tokens (accessibility-validated palette)
     widgets.py          metric cards + live charts with hover readout
-    main_window.py      the dashboard
+    main_window.py      window shell: tabs + health side panel
+    details_tab.py      professional detail view
+    process_tab.py      full process list + controls
+    optimize_tab.py     one-click action catalog + log
+    workers.py          thread-pool worker plumbing
     tray.py             tray icon, menu, notifications
 ```
 
