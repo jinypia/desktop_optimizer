@@ -1,0 +1,1 @@
+"""Desktop Optimizer application package."""

@@ -1,0 +1,35 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- Virtual environment (machine-specific, ~500 MB) ---
+.venv/
+venv/
+
+# --- Personal / local data: never commit these ---
+# Environment files with credentials or tokens
+.env
+.env.*
+*.pem
+*.key
+# Local app settings, logs, exports that may contain usernames/paths/process lists
+*.log
+logs/
+settings.local.json
+.claude/settings.local.json
+# Screenshots / captures of the running dashboard (show hostnames, processes)
+*.png
+*.jpg
+
+# --- IDE / editor ---
+.idea/
+.vscode/
+*.swp
+
+# --- OS ---
+Thumbs.db
+Desktop.ini
+.DS_Store
