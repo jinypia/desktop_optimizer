@@ -140,6 +140,12 @@ def trim_working_sets() -> ActionResult:
     PROCESS_QUERY_INFORMATION = 0x0400
     kernel32 = ctypes.windll.kernel32
     psapi = ctypes.windll.psapi
+    # explicit prototypes: default c_int would truncate 64-bit HANDLEs
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int,
+                                     ctypes.c_uint32)
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    psapi.EmptyWorkingSet.argtypes = (ctypes.c_void_p,)
     before = psutil.virtual_memory().available
     trimmed = 0
     for proc in psutil.process_iter(["pid"]):

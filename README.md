@@ -12,7 +12,11 @@ every action runs only when you click it.
 ## Requirements
 
 - Windows 10 or 11
-- Python 3.10+ (3.13 tested)
+- Python 3.10+ (3.13 tested) — **prefer the [python.org](https://www.python.org/downloads/)
+  installer over Microsoft Store Python.** The Store version sandboxes file
+  writes (MSIX virtualization), which can make "Clear temp files" silently
+  ineffective and hides the log file. The app detects Store Python and
+  warns at startup, but full functionality needs the python.org build.
 - ~500 MB disk space for the virtual environment (PySide6/Qt)
 
 No administrator rights are needed for normal use. Cleanup actions work on
@@ -123,6 +127,7 @@ main.py                 entry point
 run.bat                 launcher (venv + no console window)
 app/
   config.py             sampling cadence + alert rules
+  diag.py               self-diagnostics: log file + exception hooks
   monitor.py            metrics sampler (QThread + psutil)
   analyzer.py           degradation detection -> alerts + recommendations
   optimizer.py          one-click cleanup actions (user-triggered only)
@@ -134,7 +139,26 @@ app/
     tray.py             tray icon, menu, notifications
 ```
 
-## Troubleshooting
+## Troubleshooting & self-diagnostics
+
+The app monitors its own health too:
+
+- **Log file** — everything (errors, crashes, action results, Qt warnings)
+  is written to `logs\app.log` inside the app folder. Open it via the tray
+  menu → **Open log folder**. Check this first when something looks wrong.
+- **Stall watchdog** — if metric collection stops (charts frozen), the app
+  detects the missing heartbeat within ~15 s, shows *"Monitoring stalled —
+  restarting sampler"* in the status line, raises a toast, and restarts
+  the collector automatically. If this repeats, the log contains the full
+  traceback of what killed it.
+- **Console mode** — run `.venv\Scripts\python main.py` from PowerShell to
+  see live log output while reproducing a problem.
+- **Single instance** — launching the app twice shows a notice instead of
+  a second (stale-looking) window. If you ever see a frozen window, make
+  sure you're not looking at an old copy: exit via the tray icon and
+  relaunch.
+
+Other common issues:
 
 - **App won't start / import errors** — make sure you're running the venv
   interpreter (`.venv\Scripts\python main.py`), not the global one.

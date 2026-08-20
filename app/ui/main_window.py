@@ -1,6 +1,7 @@
 """Main dashboard window."""
 from __future__ import annotations
 
+import logging
 import time
 from functools import partial
 
@@ -19,6 +20,8 @@ from ..monitor import Snapshot
 from ..util import human_bytes, human_rate
 from . import theme
 from .widgets import LiveChart, MetricCard
+
+log = logging.getLogger(__name__)
 
 STATUS_TEXT = {
     "good": "System healthy",
@@ -50,6 +53,11 @@ class _Worker(QRunnable):
 
 class MainWindow(QMainWindow):
     RESP_TIMER_MS = 250      # responsiveness probe period
+    WATCHDOG_MS = 5000       # self-health check period
+    # no samples for this long -> monitoring is considered stalled
+    STALL_AFTER_S = config.SAMPLE_INTERVAL_S * 4 + 5
+
+    sampler_stalled = Signal()   # main() restarts the sampler on this
 
     def __init__(self):
         super().__init__()
@@ -64,15 +72,22 @@ class MainWindow(QMainWindow):
         self._hide_hint_shown = False
         self._quitting = False
         self._alerts_placeholder = None
+        self._last_sample_mono = time.monotonic()
+        self._stalled = False
+        self._ui_error_notes = 0
 
         pg.setConfigOptions(antialias=True, background=theme.SURFACE,
                             foreground=theme.MUTED)
         self._build_ui()
         self._start_lag_probe()
+        self._start_watchdog()
         self._refresh_reclaimable()
 
     def set_tray(self, tray):
         self._tray = tray
+
+    def show_startup_note(self, text: str):
+        self._log_line(text)
 
     def request_quit(self):
         self._quitting = True
@@ -255,9 +270,56 @@ class MainWindow(QMainWindow):
         # EMA smooths one-off spikes (window drags, etc.)
         self._ui_lag_ms = 0.7 * self._ui_lag_ms + 0.3 * lag
 
+    # -- self-health watchdog -------------------------------------------------
+    def _start_watchdog(self):
+        self._watchdog = QTimer(self)
+        self._watchdog.setInterval(self.WATCHDOG_MS)
+        self._watchdog.timeout.connect(self._check_heartbeat)
+        self._watchdog.start()
+
+    def _check_heartbeat(self):
+        """Detect a dead/stuck sampler by its missing heartbeat."""
+        age = time.monotonic() - self._last_sample_mono
+        if age > self.STALL_AFTER_S and not self._stalled:
+            self._stalled = True
+            log.error("Monitoring stalled — no samples for %.0f s; "
+                      "requesting sampler restart", age)
+            self._status_label.setText(
+                f"{theme.STATUS_ICON['critical']} Monitoring stalled — "
+                "restarting sampler")
+            self._status_label.setStyleSheet(
+                f"color: {theme.STATUS['critical']};")
+            self._log_line("⚠ Monitoring stalled (no data for "
+                           f"{age:.0f} s) — restarting sampler. "
+                           "See log via tray menu.")
+            if self._tray:
+                self._tray.set_status("critical", "Monitoring stalled")
+                self._tray.notify(
+                    "Desktop Optimizer problem",
+                    "Metric collection stopped responding — restarting it. "
+                    "Check the log (tray menu → Open log folder) if this "
+                    "repeats.", level="critical")
+            self.sampler_stalled.emit()
+
     # -- per-sample update ------------------------------------------------------
     @Slot(object)
     def on_sample(self, snap: Snapshot):
+        self._last_sample_mono = time.monotonic()
+        if self._stalled:
+            self._stalled = False
+            log.info("Monitoring recovered — samples flowing again")
+            self._log_line("✓ Monitoring recovered — data is live again.")
+        try:
+            self._apply_sample(snap)
+        except Exception:
+            # a UI update bug must be visible, not a silent freeze
+            log.exception("Dashboard update failed")
+            self._ui_error_notes += 1
+            if self._ui_error_notes <= 3:
+                self._log_line("✗ Dashboard update error — see log "
+                               "(tray menu → Open log folder).")
+
+    def _apply_sample(self, snap: Snapshot):
         self._sample_count += 1
         lag = self._ui_lag_ms
 
@@ -361,6 +423,10 @@ class MainWindow(QMainWindow):
     def _action_done(self, button: QPushButton, result, refresh_reclaimable):
         button.setEnabled(True)
         mark = "✓" if result.ok else "✗"
+        if result.ok:
+            log.info("Action %s: %s", result.name, result.message)
+        else:
+            log.error("Action FAILED %s: %s", result.name, result.message)
         self._log_line(f"{mark} {result.name}: {result.message}")
         if refresh_reclaimable:
             self._refresh_reclaimable()
@@ -388,6 +454,9 @@ class MainWindow(QMainWindow):
 
     def _reclaimable_done(self, res):
         if not isinstance(res, tuple):
+            # worker caught an exception and returned an ActionResult
+            log.error("Reclaimable-size scan failed: %s",
+                      getattr(res, "message", res))
             return
         (temp_bytes, _count), (bin_bytes, _items) = res
         self._btn_temp.setText(f"Clear temp files  ·  ~{human_bytes(temp_bytes)}")

@@ -17,6 +17,7 @@ venv/
 *.key
 # Local app settings, logs, exports that may contain usernames/paths/process lists
 *.log
+*.lock
 logs/
 settings.local.json
 .claude/settings.local.json

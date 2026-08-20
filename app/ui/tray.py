@@ -27,6 +27,7 @@ def status_icon(status: str, size: int = 64) -> QIcon:
 class TrayIcon(QSystemTrayIcon):
     open_requested = Signal()
     quick_clean_requested = Signal()
+    open_log_requested = Signal()
     quit_requested = Signal()
 
     def __init__(self, parent=None):
@@ -37,12 +38,15 @@ class TrayIcon(QSystemTrayIcon):
         self._menu = QMenu()
         act_open = QAction("Open dashboard", self._menu)
         act_clean = QAction("Quick clean (temp + DNS)", self._menu)
+        act_log = QAction("Open log folder", self._menu)
         act_quit = QAction("Exit", self._menu)
         act_open.triggered.connect(self.open_requested)
         act_clean.triggered.connect(self.quick_clean_requested)
+        act_log.triggered.connect(self.open_log_requested)
         act_quit.triggered.connect(self.quit_requested)
         self._menu.addAction(act_open)
         self._menu.addAction(act_clean)
+        self._menu.addAction(act_log)
         self._menu.addSeparator()
         self._menu.addAction(act_quit)
         self.setContextMenu(self._menu)

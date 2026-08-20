@@ -2,9 +2,14 @@
 
 MetricsSampler runs on its own QThread and emits a Snapshot every
 SAMPLE_INTERVAL_S seconds. All psutil access happens off the GUI thread.
+
+Resilience: an error in one sampling cycle is logged and skipped, not
+fatal. If the thread dies anyway, the MainWindow watchdog notices the
+missing heartbeat and asks main() to restart the sampler.
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 
@@ -12,6 +17,8 @@ import psutil
 from PySide6.QtCore import QThread, Signal
 
 from . import config
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -63,6 +70,14 @@ class MetricsSampler(QThread):
         self._stop = True
 
     def run(self):
+        log.info("Metrics sampler started (interval %.1fs)", self._interval)
+        try:
+            self._run()
+            log.info("Metrics sampler stopped normally")
+        except Exception:
+            log.exception("Metrics sampler DIED — watchdog will restart it")
+
+    def _run(self):
         ncpu = psutil.cpu_count(logical=True) or 1
         psutil.cpu_percent(None, percpu=True)          # prime system counter
         for p in psutil.process_iter():                # prime per-process counters
@@ -81,71 +96,82 @@ class MetricsSampler(QThread):
             now = time.monotonic()
             dt = max(now - last_t, 1e-3)
             last_t = now
-
-            per_core = psutil.cpu_percent(None, percpu=True) or [0.0]
-            cpu = sum(per_core) / len(per_core)
             try:
-                freq = psutil.cpu_freq()
-                freq_mhz = freq.current if freq else None
+                snap, last_disk, last_net = self._collect(ncpu, dt, last_disk,
+                                                          last_net)
             except Exception:
-                freq_mhz = None
+                log.exception("Sampling cycle failed — skipping this cycle")
+                continue
+            self.sample.emit(snap)
 
-            vm = psutil.virtual_memory()
-            sw = psutil.swap_memory()
+    def _collect(self, ncpu, dt, last_disk, last_net):
+        per_core = psutil.cpu_percent(None, percpu=True) or [0.0]
+        cpu = sum(per_core) / len(per_core)
+        try:
+            freq = psutil.cpu_freq()
+            freq_mhz = freq.current if freq else None
+        except Exception:
+            freq_mhz = None
 
-            disk = psutil.disk_io_counters()
-            if disk and last_disk:
-                busy_ms = (disk.read_time - last_disk.read_time) + \
-                          (disk.write_time - last_disk.write_time)
-                disk_busy = min(100.0, max(0.0, busy_ms / (dt * 10.0)))
-                disk_read_bps = max(0.0, (disk.read_bytes - last_disk.read_bytes) / dt)
-                disk_write_bps = max(0.0, (disk.write_bytes - last_disk.write_bytes) / dt)
-            else:
-                disk_busy = disk_read_bps = disk_write_bps = 0.0
-            last_disk = disk
+        vm = psutil.virtual_memory()
+        sw = psutil.swap_memory()
 
-            net = psutil.net_io_counters()
-            if net and last_net:
-                net_recv_bps = max(0.0, (net.bytes_recv - last_net.bytes_recv) / dt)
-                net_sent_bps = max(0.0, (net.bytes_sent - last_net.bytes_sent) / dt)
-            else:
-                net_recv_bps = net_sent_bps = 0.0
-            last_net = net
+        disk = psutil.disk_io_counters()
+        if disk and last_disk:
+            busy_ms = (disk.read_time - last_disk.read_time) + \
+                      (disk.write_time - last_disk.write_time)
+            disk_busy = min(100.0, max(0.0, busy_ms / (dt * 10.0)))
+            disk_read_bps = max(0.0, (disk.read_bytes - last_disk.read_bytes) / dt)
+            disk_write_bps = max(0.0, (disk.write_bytes - last_disk.write_bytes) / dt)
+        else:
+            disk_busy = disk_read_bps = disk_write_bps = 0.0
 
-            volumes = []
-            for part in psutil.disk_partitions(all=False):
-                if "cdrom" in part.opts or not part.fstype:
+        net = psutil.net_io_counters()
+        if net and last_net:
+            net_recv_bps = max(0.0, (net.bytes_recv - last_net.bytes_recv) / dt)
+            net_sent_bps = max(0.0, (net.bytes_sent - last_net.bytes_sent) / dt)
+        else:
+            net_recv_bps = net_sent_bps = 0.0
+
+        volumes = []
+        try:
+            parts = psutil.disk_partitions(all=False)
+        except OSError:
+            parts = []
+        for part in parts:
+            if "cdrom" in part.opts or not part.fstype:
+                continue
+            try:
+                u = psutil.disk_usage(part.mountpoint)
+            except OSError:
+                continue
+            volumes.append(VolumeInfo(part.mountpoint, u.percent, u.used, u.total))
+
+        procs = []
+        for p in psutil.process_iter(["pid", "name", "memory_info"]):
+            try:
+                if p.info["pid"] == 0:      # System Idle Process
                     continue
-                try:
-                    u = psutil.disk_usage(part.mountpoint)
-                except OSError:
-                    continue
-                volumes.append(VolumeInfo(part.mountpoint, u.percent, u.used, u.total))
+                c = p.cpu_percent(None) / ncpu
+                mem = p.info["memory_info"]
+                procs.append(ProcInfo(p.info["pid"], p.info["name"] or "?",
+                                      c, mem.rss if mem else 0))
+            except psutil.Error:
+                continue
+        top_cpu = sorted(procs, key=lambda x: x.cpu, reverse=True)[:config.TOP_PROCESS_COUNT]
+        top_mem = sorted(procs, key=lambda x: x.rss, reverse=True)[:config.TOP_PROCESS_COUNT]
 
-            procs = []
-            for p in psutil.process_iter(["pid", "name", "memory_info"]):
-                try:
-                    if p.info["pid"] == 0:      # System Idle Process
-                        continue
-                    c = p.cpu_percent(None) / ncpu
-                    mem = p.info["memory_info"]
-                    procs.append(ProcInfo(p.info["pid"], p.info["name"] or "?",
-                                          c, mem.rss if mem else 0))
-                except psutil.Error:
-                    continue
-            top_cpu = sorted(procs, key=lambda x: x.cpu, reverse=True)[:config.TOP_PROCESS_COUNT]
-            top_mem = sorted(procs, key=lambda x: x.rss, reverse=True)[:config.TOP_PROCESS_COUNT]
-
-            self.sample.emit(Snapshot(
-                ts=time.time(), cpu=cpu, per_core=per_core, freq_mhz=freq_mhz,
-                mem_percent=vm.percent, mem_used=vm.used, mem_total=vm.total,
-                swap_percent=sw.percent,
-                disk_busy=disk_busy, disk_read_bps=disk_read_bps,
-                disk_write_bps=disk_write_bps,
-                net_recv_bps=net_recv_bps, net_sent_bps=net_sent_bps,
-                volumes=volumes, top_cpu=top_cpu, top_mem=top_mem,
-                uptime_s=time.time() - psutil.boot_time(),
-            ))
+        snap = Snapshot(
+            ts=time.time(), cpu=cpu, per_core=per_core, freq_mhz=freq_mhz,
+            mem_percent=vm.percent, mem_used=vm.used, mem_total=vm.total,
+            swap_percent=sw.percent,
+            disk_busy=disk_busy, disk_read_bps=disk_read_bps,
+            disk_write_bps=disk_write_bps,
+            net_recv_bps=net_recv_bps, net_sent_bps=net_sent_bps,
+            volumes=volumes, top_cpu=top_cpu, top_mem=top_mem,
+            uptime_s=time.time() - psutil.boot_time(),
+        )
+        return snap, disk, net
 
     def _sleep(self, seconds: float):
         end = time.monotonic() + seconds
