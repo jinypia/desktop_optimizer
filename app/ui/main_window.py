@@ -47,7 +47,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Desktop Optimizer"
                             + ("  [Administrator]" if optimizer.is_admin() else ""))
-        self.resize(1240, 820)
+        self.resize(1060, 700)
+        self.setMinimumSize(940, 620)
 
         self._analyzer = Analyzer()
         self._pool = QThreadPool.globalInstance()
@@ -85,8 +86,8 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
+        root.setContentsMargins(10, 8, 10, 10)
+        root.setSpacing(8)
 
         # left: tabs
         self._tabs = QTabWidget()
@@ -103,10 +104,10 @@ class MainWindow(QMainWindow):
 
         # right: always-visible health column
         side = QWidget()
-        side.setFixedWidth(360)
+        side.setFixedWidth(310)
         side_lay = QVBoxLayout(side)
         side_lay.setContentsMargins(0, 0, 0, 0)
-        side_lay.setSpacing(10)
+        side_lay.setSpacing(8)
         side_lay.addWidget(self._build_alerts_panel(), 1)
         side_lay.addWidget(self._build_process_panel(), 0)
         root.addWidget(side, 0)
@@ -114,11 +115,11 @@ class MainWindow(QMainWindow):
     def _build_dashboard_tab(self) -> QWidget:
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(4, 8, 4, 4)
-        lay.setSpacing(10)
+        lay.setContentsMargins(2, 6, 2, 2)
+        lay.setSpacing(8)
 
         cards = QHBoxLayout()
-        cards.setSpacing(10)
+        cards.setSpacing(8)
         self._card_cpu = MetricCard("CPU", theme.SERIES_CPU)
         self._card_mem = MetricCard("Memory", theme.SERIES_MEM)
         self._card_disk = MetricCard("Disk", theme.SERIES_DISK)
@@ -226,8 +227,8 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         for r in range(rows):
-            table.setRowHeight(r, 22)
-        table.setFixedHeight(rows * 22 + 30)
+            table.setRowHeight(r, 20)
+        table.setFixedHeight(rows * 20 + 28)
         self._proc_table = table
         lay.addWidget(table)
         return panel
@@ -306,31 +307,31 @@ class MainWindow(QMainWindow):
         self._sample_count += 1
         lag = self._ui_lag_ms
 
+        gb = 1 << 30
         freq = f" · {snap.freq_mhz / 1000:.1f} GHz" if snap.freq_mhz else ""
         top_c = snap.top_cpu[0] if snap.top_cpu else None
         self._card_cpu.update_values(
             f"{snap.cpu:.0f}%",
-            f"{len(snap.per_core)} threads{freq} · "
-            f"peak core {max(snap.per_core):.0f}%",
+            f"{len(snap.per_core)} thr{freq} · peak {max(snap.per_core):.0f}%",
             f"top: {top_c.name} {top_c.cpu:.0f}%" if top_c else "")
         top_m = snap.top_mem[0] if snap.top_mem else None
         self._card_mem.update_values(
             f"{snap.mem_percent:.0f}%",
-            f"{human_bytes(snap.mem_used)} / {human_bytes(snap.mem_total)} "
-            f"· free {human_bytes(snap.mem_total - snap.mem_used)}",
+            f"{snap.mem_used / gb:.1f} / {snap.mem_total / gb:.1f} GB · "
+            f"free {(snap.mem_total - snap.mem_used) / gb:.1f}",
             f"top: {top_m.name} {human_bytes(top_m.rss)}" if top_m else "")
         fullest = max(snap.volumes, key=lambda v: v.percent, default=None)
         self._card_disk.update_values(
             f"{snap.disk_busy:.0f}%",
             f"R {human_rate(snap.disk_read_bps)} · "
             f"W {human_rate(snap.disk_write_bps)}",
-            (f"{fullest.mount} {fullest.percent:.0f}% full · free "
+            (f"{fullest.mount} {fullest.percent:.0f}% · free "
              f"{human_bytes(fullest.total - fullest.used)}") if fullest else "")
         resp_word = ("Smooth" if lag < 80 else
                      "Sluggish" if lag < 300 else "Very slow")
         self._card_resp.update_values(
             f"{lag:.0f} ms", resp_word,
-            f"interrupts {snap.intr_per_s / 1000:.1f}k/s")
+            f"intr {snap.intr_per_s / 1000:.1f}k/s")
 
         self._strip["net"].setText(
             f"▼ {human_rate(snap.net_recv_bps)}   "

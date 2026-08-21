@@ -48,7 +48,7 @@ QFrame#card, QFrame#panel {{
 }}
 QLabel {{ border: none; background: transparent; }}
 QLabel#cardTitle {{ color: {MUTED}; font-size: 11px; letter-spacing: 1px; }}
-QLabel#cardValue {{ color: {TEXT}; font-size: 22px; font-weight: 600; }}
+QLabel#cardValue {{ color: {TEXT}; font-size: 20px; font-weight: 600; }}
 QLabel#cardSub {{ color: {TEXT_2}; font-size: 11px; }}
 QLabel#stripLabel {{ color: {TEXT_2}; font-size: 11px; }}
 QLabel#stripSep {{ color: #3a3a38; font-size: 11px; }}

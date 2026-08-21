@@ -120,7 +120,7 @@ class OptimizeTab(QWidget):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(400)
-        self.log.setFixedHeight(110)
+        self.log.setFixedHeight(90)
         self.log.setPlaceholderText("Action results appear here.")
         outer.addWidget(self.log)
 
