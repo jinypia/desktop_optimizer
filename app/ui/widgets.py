@@ -17,8 +17,8 @@ class MetricCard(QFrame):
         super().__init__(parent)
         self.setObjectName("card")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 10, 14, 12)
-        lay.setSpacing(2)
+        lay.setContentsMargins(12, 8, 12, 9)
+        lay.setSpacing(1)
 
         head = QHBoxLayout()
         head.setSpacing(6)
@@ -34,14 +34,18 @@ class MetricCard(QFrame):
         self._value.setObjectName("cardValue")
         self._sub = QLabel("")
         self._sub.setObjectName("cardSub")
+        self._sub2 = QLabel("")
+        self._sub2.setObjectName("cardSub")
 
         lay.addLayout(head)
         lay.addWidget(self._value)
         lay.addWidget(self._sub)
+        lay.addWidget(self._sub2)
 
-    def update_values(self, value: str, sub: str = ""):
+    def update_values(self, value: str, sub: str = "", sub2: str = ""):
         self._value.setText(value)
         self._sub.setText(sub)
+        self._sub2.setText(sub2)
 
 
 class LiveChart:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QThreadPool, QTimer, Signal, Slot
@@ -59,6 +60,9 @@ class MainWindow(QMainWindow):
         self._last_sample_mono = time.monotonic()
         self._stalled = False
         self._ui_error_notes = 0
+        # ~60 s of own-overhead history; warns if the app itself gets heavy
+        self._self_hist = deque(maxlen=40)
+        self._self_warned = False
 
         pg.setConfigOptions(antialias=True, background=theme.SURFACE,
                             foreground=theme.MUTED)
@@ -123,6 +127,26 @@ class MainWindow(QMainWindow):
                      self._card_disk, self._card_resp):
             cards.addWidget(card, 1)
         lay.addLayout(cards)
+
+        # compact info strip: system vitals + the app's own overhead
+        strip = QFrame()
+        strip.setObjectName("panel")
+        strip_lay = QHBoxLayout(strip)
+        strip_lay.setContentsMargins(12, 5, 12, 5)
+        strip_lay.setSpacing(0)
+        self._strip = {}
+        for i, key in enumerate(("net", "procs", "ctx", "syscalls",
+                                 "pagefile", "uptime", "self")):
+            if i:
+                sep = QLabel("·")
+                sep.setObjectName("stripSep")
+                strip_lay.addWidget(sep)
+            lbl = QLabel("–")
+            lbl.setObjectName("stripLabel")
+            self._strip[key] = lbl
+            strip_lay.addWidget(lbl)
+            strip_lay.addStretch(1)
+        lay.addWidget(strip)
 
         chart_frame = QFrame()
         chart_frame.setObjectName("panel")
@@ -283,18 +307,46 @@ class MainWindow(QMainWindow):
         lag = self._ui_lag_ms
 
         freq = f" · {snap.freq_mhz / 1000:.1f} GHz" if snap.freq_mhz else ""
+        top_c = snap.top_cpu[0] if snap.top_cpu else None
         self._card_cpu.update_values(
-            f"{snap.cpu:.0f}%", f"{len(snap.per_core)} threads{freq}")
+            f"{snap.cpu:.0f}%",
+            f"{len(snap.per_core)} threads{freq} · "
+            f"peak core {max(snap.per_core):.0f}%",
+            f"top: {top_c.name} {top_c.cpu:.0f}%" if top_c else "")
+        top_m = snap.top_mem[0] if snap.top_mem else None
         self._card_mem.update_values(
             f"{snap.mem_percent:.0f}%",
-            f"{human_bytes(snap.mem_used)} / {human_bytes(snap.mem_total)}")
+            f"{human_bytes(snap.mem_used)} / {human_bytes(snap.mem_total)} "
+            f"· free {human_bytes(snap.mem_total - snap.mem_used)}",
+            f"top: {top_m.name} {human_bytes(top_m.rss)}" if top_m else "")
+        fullest = max(snap.volumes, key=lambda v: v.percent, default=None)
         self._card_disk.update_values(
             f"{snap.disk_busy:.0f}%",
             f"R {human_rate(snap.disk_read_bps)} · "
-            f"W {human_rate(snap.disk_write_bps)}")
+            f"W {human_rate(snap.disk_write_bps)}",
+            (f"{fullest.mount} {fullest.percent:.0f}% full · free "
+             f"{human_bytes(fullest.total - fullest.used)}") if fullest else "")
         resp_word = ("Smooth" if lag < 80 else
                      "Sluggish" if lag < 300 else "Very slow")
-        self._card_resp.update_values(f"{lag:.0f} ms", resp_word)
+        self._card_resp.update_values(
+            f"{lag:.0f} ms", resp_word,
+            f"interrupts {snap.intr_per_s / 1000:.1f}k/s")
+
+        self._strip["net"].setText(
+            f"▼ {human_rate(snap.net_recv_bps)}   "
+            f"▲ {human_rate(snap.net_sent_bps)}")
+        self._strip["procs"].setText(f"{snap.proc_count:,} processes")
+        self._strip["ctx"].setText(f"ctx {snap.ctx_per_s / 1000:.1f}k/s")
+        self._strip["syscalls"].setText(
+            f"syscalls {snap.syscalls_per_s / 1000:.0f}k/s")
+        self._strip["pagefile"].setText(f"pagefile {snap.swap_percent:.0f}%")
+        up = snap.uptime_s
+        self._strip["uptime"].setText(
+            f"up {int(up // 86400)}d {int(up % 86400 // 3600)}h")
+        self._strip["self"].setText(
+            f"app cost: {snap.self_cpu:.1f}% CPU · "
+            f"{human_bytes(snap.self_rss)}")
+        self._watch_self_overhead(snap)
 
         self._chart_cpu.update(snap.cpu)
         self._chart_mem.update(snap.mem_percent)
@@ -326,6 +378,28 @@ class MainWindow(QMainWindow):
 
         if self._sample_count % 30 == 1 and self._sample_count > 1:
             self._refresh_reclaimable()
+
+    SELF_CPU_BUDGET = 5.0     # % of total machine CPU, sustained ~60 s
+
+    def _watch_self_overhead(self, snap: Snapshot):
+        """The monitor must never become its own performance problem."""
+        self._self_hist.append(snap.self_cpu)
+        if (len(self._self_hist) == self._self_hist.maxlen
+                and not self._self_warned):
+            avg = sum(self._self_hist) / len(self._self_hist)
+            if avg > self.SELF_CPU_BUDGET:
+                self._self_warned = True
+                log.warning("Own overhead high: avg %.1f%% CPU over ~60 s "
+                            "(budget %.0f%%)", avg, self.SELF_CPU_BUDGET)
+                self._add_alert(Alert(
+                    "self_overhead", "warning",
+                    "Desktop Optimizer overhead high",
+                    f"The app itself averaged {avg:.1f}% CPU over the last "
+                    f"minute (budget {self.SELF_CPU_BUDGET:.0f}%).",
+                    ["Close the Processes/Details tab when not needed",
+                     "Report this — the sampler may be misbehaving "
+                     "(logs/app.log)"],
+                    snap.ts))
 
     def _update_proc_table(self, snap: Snapshot):
         rows = self._proc_table.rowCount()
