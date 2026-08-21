@@ -61,13 +61,25 @@ the right (status, alerts with recommendations, top CPU processes).
 
 ### Dashboard tab
 
-- **Stat cards (top row)** — current CPU %, memory use, disk activity, and
-  **Responsiveness**: the measured UI event-loop delay in milliseconds.
-  This is the "does the desktop feel slow?" number — under ~80 ms is
-  smooth.
+- **Stat cards (top row)** — current CPU % (with peak core and top
+  process), memory (used/free and top consumer), disk activity (rates and
+  fullest volume), and **Responsiveness**: the measured UI event-loop
+  delay in milliseconds — under ~80 ms is smooth.
+- **Vitals strip** — network down/up, process count, context switches/s,
+  syscalls/s, pagefile use, uptime, and **the app's own cost** (CPU % +
+  RAM), so you can always see what the monitor itself consumes.
 - **Charts** — the last ~6 minutes of CPU, memory, disk-busy, and network
   history. Hover over any chart for an exact value readout at that point
   in time.
+
+### The monitor's own overhead
+
+Monitoring must not become its own performance problem, so the app
+polices itself: the sampler thread runs at low priority, the all-process
+scan runs every 2nd cycle and volume scans every 10th, heavy tab views
+refresh only while visible, and the app measures its own CPU/RAM each
+cycle (shown in the vitals strip). If the app itself averages more than
+5% CPU over a minute, it raises a warning alert against itself.
 
 ### Details tab (professional view)
 

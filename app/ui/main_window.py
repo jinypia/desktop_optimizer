@@ -376,7 +376,9 @@ class MainWindow(QMainWindow):
                         body += "\n" + alert.recommendations[0]
                     self._tray.notify(alert.title, body, level=alert.severity)
 
-        if self._sample_count % 30 == 1 and self._sample_count > 1:
+        # every ~5 min: the temp-tree walk is the app's most expensive
+        # recurring task, and reclaimable size changes slowly
+        if self._sample_count % 200 == 1 and self._sample_count > 1:
             self._refresh_reclaimable()
 
     SELF_CPU_BUDGET = 5.0     # % of total machine CPU, sustained ~60 s
