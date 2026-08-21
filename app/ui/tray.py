@@ -6,8 +6,15 @@ from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 from . import theme
 
 
+_ICON_CACHE = {}
+
+
 def status_icon(status: str, size: int = 64) -> QIcon:
-    """Rounded dark tile with a status-colored dot."""
+    """Rounded dark tile with a status-colored dot (cached — this is
+    called every sample and must not churn GDI objects)."""
+    cached = _ICON_CACHE.get((status, size))
+    if cached is not None:
+        return cached
     pm = QPixmap(size, size)
     pm.fill(QColor(0, 0, 0, 0))
     p = QPainter(pm)
@@ -21,7 +28,9 @@ def status_icon(status: str, size: int = 64) -> QIcon:
     r = size * 0.42
     p.drawEllipse(QRectF((size - r) / 2, (size - r) / 2, r, r))
     p.end()
-    return QIcon(pm)
+    icon = QIcon(pm)
+    _ICON_CACHE[(status, size)] = icon
+    return icon
 
 
 class TrayIcon(QSystemTrayIcon):
@@ -57,7 +66,9 @@ class TrayIcon(QSystemTrayIcon):
             self.open_requested.emit()
 
     def set_status(self, status: str, tooltip: str):
-        self.setIcon(status_icon(status))
+        if status != getattr(self, "_status", None):
+            self._status = status
+            self.setIcon(status_icon(status))
         self.setToolTip(tooltip)
 
     def notify(self, title: str, body: str, level: str = "info"):

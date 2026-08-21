@@ -70,6 +70,7 @@ class DetailsTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._last_nic = None          # (timestamp, {nic: counters})
+        self._nic_meta = ({}, {})      # cached (net_if_addrs, net_if_stats)
         self._nic_meta_age = 0
 
         outer = QVBoxLayout(self)
@@ -248,11 +249,16 @@ class DetailsTab(QWidget):
                                   (c.bytes_sent - last[nic].bytes_sent) / dt)
         self._last_nic = (now, counters)
 
-        try:
-            addrs = psutil.net_if_addrs()
-            stats = psutil.net_if_stats()
-        except OSError:
-            addrs, stats = {}, {}
+        # addrs/stats queries can take tens of ms — refresh only every
+        # ~30 s (interfaces rarely change), keep the GUI thread snappy
+        if self._nic_meta_age <= 0:
+            try:
+                self._nic_meta = (psutil.net_if_addrs(), psutil.net_if_stats())
+            except OSError:
+                self._nic_meta = ({}, {})
+            self._nic_meta_age = 20
+        self._nic_meta_age -= 1
+        addrs, stats = self._nic_meta
 
         # show active interfaces first, skip loopback
         nics = [n for n in counters

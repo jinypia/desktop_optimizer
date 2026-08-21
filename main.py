@@ -34,8 +34,14 @@ def main() -> int:
     # Single instance — a second copy would show a confusingly stale window.
     # The lock lives beside the log, NOT in %TEMP%: Store Python virtualizes
     # temp, which would give each interpreter its own view of the lock.
+    # Retry briefly: an elevated relaunch starts while the old copy is exiting.
     lock = QLockFile(os.path.join(diag.LOG_DIR, "app.lock"))
-    if not lock.tryLock(100):
+    got_lock = False
+    for _ in range(15):
+        if lock.tryLock(200):
+            got_lock = True
+            break
+    if not got_lock:
         log.warning("Another instance is already running — exiting")
         QMessageBox.information(
             None, "Desktop Optimizer",
@@ -104,6 +110,7 @@ def main() -> int:
 
     start_sampler()
     window.show()
+    diag.FreezeWatch(window.last_gui_beat).start()
     return app.exec()
 
 

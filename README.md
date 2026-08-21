@@ -206,8 +206,22 @@ The app monitors its own health too:
   sure you're not looking at an old copy: exit via the tray icon and
   relaunch.
 
+- **Freeze forensics** — a watchdog thread monitors the GUI thread; if the
+  window is unresponsive for 2+ seconds, the log records the exact stack
+  it was stuck in and the total freeze duration after recovery.
+
 Other common issues:
 
+- **Window occasionally freezes ("no response")** — if the app runs from a
+  network share, Windows pages its Qt libraries over the network, and any
+  share hiccup freezes the app. `run.bat` therefore prefers a local-disk
+  venv at `%LOCALAPPDATA%\DesktopOptimizer\venv` when one exists — create
+  it with:
+  `python -m venv %LOCALAPPDATA%\DesktopOptimizer\venv` then
+  `%LOCALAPPDATA%\DesktopOptimizer\venv\Scripts\pip install -r requirements.txt`.
+  Log writes are queued to a dedicated thread, so a slow share never
+  blocks the UI. After any freeze, check `logs\app.log` for the recorded
+  stack trace.
 - **App won't start / import errors** — make sure you're running the venv
   interpreter (`.venv\Scripts\python main.py`), not the global one.
 - **`pip install` connection resets** — see the trusted-host note under

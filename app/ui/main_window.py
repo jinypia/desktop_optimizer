@@ -81,6 +81,10 @@ class MainWindow(QMainWindow):
     def request_quit(self):
         self._quitting = True
 
+    def last_gui_beat(self) -> float:
+        """Monotonic time of the GUI thread's last heartbeat (FreezeWatch)."""
+        return self._last_tick
+
     # -- layout ----------------------------------------------------------------
     def _build_ui(self):
         central = QWidget()

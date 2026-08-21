@@ -6,11 +6,15 @@ logs/ folder. AppData is deliberately avoided: Microsoft Store Python
 virtualizes writes there into its package container, which makes the log
 invisible at the expected path.
 """
+import atexit
 import logging
 import logging.handlers
 import os
+import queue
 import sys
 import threading
+import time
+import traceback
 
 from PySide6.QtCore import qInstallMessageHandler
 
@@ -37,11 +41,17 @@ def setup_logging() -> str:
     fh = logging.handlers.RotatingFileHandler(
         LOG_FILE, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
     fh.setFormatter(fmt)
-    root.addHandler(fh)
 
     sh = logging.StreamHandler()
     sh.setFormatter(fmt)
-    root.addHandler(sh)
+
+    # The log file may live on a network share: write from a dedicated
+    # thread so an SMB stall can never block the GUI or sampler threads.
+    q = queue.SimpleQueue()
+    root.addHandler(logging.handlers.QueueHandler(q))
+    listener = logging.handlers.QueueListener(q, fh, sh)
+    listener.start()
+    atexit.register(listener.stop)
 
     # Uncaught exceptions on the GUI thread
     def _excepthook(exc_type, exc, tb):
@@ -65,3 +75,39 @@ def setup_logging() -> str:
 
     qInstallMessageHandler(_qt_handler)
     return LOG_FILE
+
+
+class FreezeWatch(threading.Thread):
+    """Watches the GUI thread's heartbeat from a daemon thread.
+
+    When the GUI stops responding for `threshold_s`, logs the exact stack
+    the main thread is stuck in — hard evidence for "sometimes it gets no
+    response" reports — and logs the total duration once it recovers.
+    """
+
+    def __init__(self, get_beat, threshold_s: float = 2.0):
+        super().__init__(name="FreezeWatch", daemon=True)
+        self._get_beat = get_beat
+        self._threshold = threshold_s
+        self._main_ident = threading.main_thread().ident
+
+    def run(self):
+        log = logging.getLogger(__name__)
+        frozen_since = None
+        while True:
+            time.sleep(0.5)
+            try:
+                age = time.monotonic() - self._get_beat()
+            except Exception:
+                continue
+            if age > self._threshold and frozen_since is None:
+                frozen_since = time.monotonic() - age
+                frame = sys._current_frames().get(self._main_ident)
+                stack = ("".join(traceback.format_stack(frame))
+                         if frame else "(stack unavailable)")
+                log.warning("GUI thread unresponsive for %.1f s — "
+                            "currently stuck at:\n%s", age, stack)
+            elif age < self._threshold / 2 and frozen_since is not None:
+                log.warning("GUI thread recovered after %.1f s",
+                            time.monotonic() - frozen_since)
+                frozen_since = None
