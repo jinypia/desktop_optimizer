@@ -165,13 +165,40 @@ log at the bottom. **Run all safe cleanups** chains the starred ones.
 | **Restart Explorer** | Restarts the Windows shell (fixes a frozen taskbar). Asks for confirmation. |
 | **Restart as administrator…** | Relaunches the app elevated (UAC prompt) to enable admin-only actions and control of elevated processes. |
 
-### Tray icon
+### Mini mode — compact status above the taskbar
 
-- The icon's dot color mirrors overall health (green / amber / red).
+Press **Ctrl+M**, click **▭ Mini mode** (top-right of the tab bar), or pick
+*Mini mode* from the tray menu. The dashboard collapses to a single strip
+about 490×34 px showing status, CPU, memory, disk, network and
+responsiveness:
+
+```
+● CPU 71%  MEM 62%  DSK 18%  NET 439.5 KB/s  RESP 495 ms   ▣
+```
+
+- Always on top, so it stays visible over other windows.
+- **Drag it anywhere** — park it above the taskbar. The position is
+  remembered between sessions.
+- **Double-click** it, press Ctrl+M again, click **▣**, or use the tray's
+  *Open dashboard* to return to the full view.
+- Monitoring never pauses, and chart history keeps accumulating while
+  hidden, so the graphs are unbroken when you come back — but the charts
+  are not *redrawn* while nobody can see them, so mini mode is cheaper
+  than the full dashboard.
+
+### Taskbar icon (notification area)
+
+The tray icon is a live readout: it shows the **current CPU load as a
+number** with a fill bar underneath, colored by overall health (green /
+amber / red). Status is visible at a glance with no window open at all.
+
 - Hover it for a one-line CPU/memory summary.
 - Click it to reopen the dashboard.
-- Right-click for: **Open dashboard**, **Quick clean** (temp files + DNS
-  in one go), and **Exit**.
+- Right-click for: **Open dashboard**, **Mini mode**, **Quick clean**
+  (temp files + DNS), **Open log folder**, and **Exit**.
+
+The icon is repainted only when the displayed number actually changes
+(quantised to 2%), keeping it effectively free.
 
 ## Tuning thresholds
 
@@ -293,3 +320,15 @@ Other common issues:
   it.
 - **No toast notifications** — check Windows Settings → System →
   Notifications isn't suppressing them (Focus Assist / Do Not Disturb).
+
+## License
+
+Desktop Optimizer is open source under the **MIT License** — see
+[`LICENSE`](LICENSE). You may use, modify and redistribute it, including
+commercially, as long as the copyright notice is kept.
+
+It bundles third-party open-source components, most notably **Qt for Python
+(PySide6) under the LGPL v3**. If you redistribute the built installer or
+portable ZIP, keep [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) with
+it — that file lists every dependency's license and what the LGPL requires
+of you. Contributions are accepted under the same MIT terms.

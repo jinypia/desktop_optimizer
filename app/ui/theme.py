@@ -123,6 +123,24 @@ QComboBox QAbstractItemView {{
 }}
 QLabel#detailKey {{ color: {MUTED}; font-size: 11px; }}
 QLabel#detailValue {{ color: {TEXT_2}; font-size: 12px; }}
+QPushButton#miniToggle {{
+    background: transparent; color: {MUTED};
+    border: none; padding: 4px 10px; font-size: 11px;
+}}
+QPushButton#miniToggle:hover {{ color: {TEXT}; background: #242423; }}
+/* --- mini mode --- */
+QFrame#miniCard {{
+    background: {SURFACE};
+    border: 1px solid rgba(255,255,255,38);
+    border-radius: 8px;
+}}
+QLabel#miniKey {{ font-size: 10px; font-weight: 600; letter-spacing: 0.5px; }}
+QLabel#miniValue {{ color: {TEXT}; font-size: 12px; font-weight: 600; }}
+QPushButton#miniButton {{
+    background: transparent; color: {MUTED};
+    border: none; border-radius: 4px; padding: 0; font-size: 11px;
+}}
+QPushButton#miniButton:hover {{ background: #2e2e2c; color: {TEXT}; }}
 QScrollArea {{ background: transparent; border: none; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
 """

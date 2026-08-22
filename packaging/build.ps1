@@ -81,6 +81,11 @@ Write-Host "`n[3/4] building installer (Inno Setup)..." -ForegroundColor Cyan
 if (-not (Test-Path $Iscc)) {
     throw "ISCC.exe not found: $Iscc  (see README > Building the installer)"
 }
+# Drop installers from earlier versions so the output folder never offers
+# two versions side by side.
+Get-ChildItem (Join-Path $distDir "installer") -Filter "*-setup.exe" `
+    -ErrorAction SilentlyContinue |
+    Remove-Item -Force -Confirm:$false -ErrorAction SilentlyContinue
 & $Iscc /Q "packaging\installer.iss"
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
 

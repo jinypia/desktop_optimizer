@@ -7,8 +7,8 @@ import time
 from collections import deque
 
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QColor
+from PySide6.QtCore import QSettings, Qt, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtGui import QCloseEvent, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QPushButton, QTableWidget, QTableWidgetItem,
@@ -21,6 +21,7 @@ from ..monitor import Snapshot
 from ..util import human_bytes, human_rate
 from . import theme
 from .details_tab import DetailsTab
+from .mini_window import MiniWindow
 from .optimize_tab import OptimizeTab
 from .process_tab import ProcessTab
 from .widgets import LiveChart, MetricCard
@@ -64,10 +65,14 @@ class MainWindow(QMainWindow):
         # ~60 s of own-overhead history; warns if the app itself gets heavy
         self._self_hist = deque(maxlen=40)
         self._self_warned = False
+        self._settings = QSettings("jinypia", "DesktopOptimizer")
+        self._mini = None
+        self._charts_stale = False
 
         pg.setConfigOptions(antialias=True, background=theme.SURFACE,
                             foreground=theme.MUTED)
         self._build_ui()
+        QShortcut(QKeySequence("Ctrl+M"), self, self.toggle_mini_mode)
         self._start_lag_probe()
         self._start_watchdog()
         self._refresh_reclaimable()
@@ -80,6 +85,10 @@ class MainWindow(QMainWindow):
 
     def request_quit(self):
         self._quitting = True
+        if self._mini is not None:
+            if self._mini.isVisible():
+                self._settings.setValue("mini/pos", self._mini.position())
+            self._mini.close()
 
     def last_gui_beat(self) -> float:
         """Monotonic time of the GUI thread's last heartbeat (FreezeWatch)."""
@@ -104,6 +113,15 @@ class MainWindow(QMainWindow):
         self._optimize = OptimizeTab(self._run_action, self._quit_for_elevation)
         self._tabs.addTab(self._optimize, "Optimize")
         self._tabs.currentChanged.connect(self._on_tab_changed)
+
+        mini_btn = QPushButton("▭  Mini mode")
+        mini_btn.setObjectName("miniToggle")
+        mini_btn.setToolTip(
+            "Shrink to a compact strip above the taskbar (Ctrl+M)")
+        mini_btn.setCursor(Qt.PointingHandCursor)
+        mini_btn.clicked.connect(self.enter_mini_mode)
+        self._tabs.setCornerWidget(mini_btn, Qt.TopRightCorner)
+
         root.addWidget(self._tabs, 1)
 
         # right: always-visible health column
@@ -289,6 +307,51 @@ class MainWindow(QMainWindow):
         self._processes.set_active(
             self._tabs.currentWidget() is self._processes)
 
+    # -- mini mode ---------------------------------------------------------------
+    def enter_mini_mode(self):
+        """Shrink to the compact strip; the dashboard hides entirely."""
+        if self._mini is None:
+            self._mini = MiniWindow()
+            self._mini.restore_requested.connect(self.exit_mini_mode)
+            pos = self._settings.value("mini/pos")
+            if pos is not None:
+                self._mini.move(pos)
+                self._mini.clamp_to_screen()
+            else:
+                self._mini.park_bottom_right()
+        self._processes.set_active(False)      # stop scanning while hidden
+        self.hide()
+        self._mini.show()
+        self._mini.raise_()
+        log.info("Mini mode on")
+
+    def exit_mini_mode(self):
+        if self._mini is not None and self._mini.isVisible():
+            self._settings.setValue("mini/pos", self._mini.position())
+            self._mini.hide()
+        if self._charts_stale:
+            self._redraw_charts()
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self._on_tab_changed(self._tabs.currentIndex())
+        log.info("Mini mode off")
+
+    def in_mini_mode(self) -> bool:
+        return self._mini is not None and self._mini.isVisible()
+
+    def toggle_mini_mode(self):
+        if self.in_mini_mode():
+            self.exit_mini_mode()
+        else:
+            self.enter_mini_mode()
+
+    def _redraw_charts(self):
+        for chart in (self._chart_cpu, self._chart_mem,
+                      self._chart_disk, self._chart_net):
+            chart.redraw()
+        self._charts_stale = False
+
     # -- per-sample update ------------------------------------------------------
     @Slot(object)
     def on_sample(self, snap: Snapshot):
@@ -310,8 +373,56 @@ class MainWindow(QMainWindow):
     def _apply_sample(self, snap: Snapshot):
         self._sample_count += 1
         lag = self._ui_lag_ms
+        # Cards, charts and the vitals strip cost nothing to skip while the
+        # dashboard is hidden (mini mode or minimised to tray).
+        visible = self.isVisible()
 
         gb = 1 << 30
+        if visible:
+            self._update_dashboard(snap, lag, gb)
+        else:
+            self._charts_stale = True
+        self._chart_cpu.update(snap.cpu, redraw=visible)
+        self._chart_mem.update(snap.mem_percent, redraw=visible)
+        self._chart_disk.update(snap.disk_busy, redraw=visible)
+        self._chart_net.update(snap.net_recv_bps / 1024.0,
+                               snap.net_sent_bps / 1024.0, redraw=visible)
+
+        self._update_proc_table(snap)
+        if visible and self._tabs.currentWidget() is self._details:
+            self._details.update_snapshot(snap, lag)
+
+        events = self._analyzer.evaluate(snap, lag)
+        for alert in events:
+            self._add_alert(alert)
+        status = self._analyzer.status()
+        self._set_status(status)
+
+        if self._mini is not None and self._mini.isVisible():
+            self._mini.update_snapshot(snap, lag, status)
+
+        if self._tray:
+            self._tray.set_status(
+                status,
+                f"CPU {snap.cpu:.0f}% · MEM {snap.mem_percent:.0f}% · "
+                f"{STATUS_TEXT[status]}",
+                load=snap.cpu)
+            for alert in events:
+                if alert.severity in ("warning", "critical"):
+                    body = alert.detail
+                    if alert.recommendations:
+                        body += "\n" + alert.recommendations[0]
+                    self._tray.notify(alert.title, body, level=alert.severity)
+
+        self._watch_self_overhead(snap)
+
+        # every ~5 min: the temp-tree walk is the app's most expensive
+        # recurring task, and reclaimable size changes slowly
+        if self._sample_count % 200 == 1 and self._sample_count > 1:
+            self._refresh_reclaimable()
+
+    def _update_dashboard(self, snap: Snapshot, lag: float, gb: int):
+        """Cards + vitals strip — only worth doing when on screen."""
         freq = f" · {snap.freq_mhz / 1000:.1f} GHz" if snap.freq_mhz else ""
         top_c = snap.top_cpu[0] if snap.top_cpu else None
         self._card_cpu.update_values(
@@ -351,40 +462,6 @@ class MainWindow(QMainWindow):
         self._strip["self"].setText(
             f"app cost: {snap.self_cpu:.1f}% CPU · "
             f"{human_bytes(snap.self_rss)}")
-        self._watch_self_overhead(snap)
-
-        self._chart_cpu.update(snap.cpu)
-        self._chart_mem.update(snap.mem_percent)
-        self._chart_disk.update(snap.disk_busy)
-        self._chart_net.update(snap.net_recv_bps / 1024.0,
-                               snap.net_sent_bps / 1024.0)
-
-        self._update_proc_table(snap)
-        if self._tabs.currentWidget() is self._details and self.isVisible():
-            self._details.update_snapshot(snap, lag)
-
-        events = self._analyzer.evaluate(snap, lag)
-        for alert in events:
-            self._add_alert(alert)
-        status = self._analyzer.status()
-        self._set_status(status)
-
-        if self._tray:
-            self._tray.set_status(
-                status,
-                f"CPU {snap.cpu:.0f}% · MEM {snap.mem_percent:.0f}% · "
-                f"{STATUS_TEXT[status]}")
-            for alert in events:
-                if alert.severity in ("warning", "critical"):
-                    body = alert.detail
-                    if alert.recommendations:
-                        body += "\n" + alert.recommendations[0]
-                    self._tray.notify(alert.title, body, level=alert.severity)
-
-        # every ~5 min: the temp-tree walk is the app's most expensive
-        # recurring task, and reclaimable size changes slowly
-        if self._sample_count % 200 == 1 and self._sample_count > 1:
-            self._refresh_reclaimable()
 
     SELF_CPU_BUDGET = 5.0     # % of total machine CPU, sustained ~60 s
 

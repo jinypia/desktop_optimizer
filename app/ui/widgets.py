@@ -105,9 +105,21 @@ class LiveChart:
         self.plot.addItem(self._label, ignoreBounds=True)
         self.plot.scene().sigMouseMoved.connect(self._on_mouse)
 
-    def update(self, *values):
+    def update(self, *values, redraw: bool = True):
+        """Append a sample; skip the repaint when nothing can see it.
+
+        History keeps accumulating while the window is hidden (mini mode,
+        tray), so restoring the dashboard shows an unbroken timeline —
+        without paying for curve redraws nobody is looking at.
+        """
         for buf, v in zip(self._buffers, values):
             buf.append(float(v))
+        if redraw:
+            self.redraw()
+
+    def redraw(self):
+        if not self._buffers[0]:
+            return
         n = len(self._buffers[0])
         xs = [-(n - 1 - i) * self._dt for i in range(n)]
         for curve, buf in zip(self._curves, self._buffers):

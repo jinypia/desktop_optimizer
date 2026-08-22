@@ -79,8 +79,8 @@ def main() -> int:
             "functionality install Python from python.org and rebuild .venv.")
 
     tray = TrayIcon(app)
-    tray.open_requested.connect(
-        lambda: (window.showNormal(), window.raise_(), window.activateWindow()))
+    tray.open_requested.connect(window.exit_mini_mode)
+    tray.mini_requested.connect(window.enter_mini_mode)
     tray.quick_clean_requested.connect(window.run_quick_clean)
     tray.open_log_requested.connect(lambda: os.startfile(diag.LOG_DIR))
     window.set_tray(tray)

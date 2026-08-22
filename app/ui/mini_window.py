@@ -1,0 +1,139 @@
+"""Mini mode: a compact always-on-top status strip.
+
+A small frameless window that shows the essentials — CPU, memory, disk,
+network and responsiveness — in one line, meant to be parked above the
+taskbar. Drag it anywhere; double-click (or the restore button) brings the
+full dashboard back. Its position is remembered.
+
+Deliberately cheap: a handful of QLabel updates per sample, no charts.
+"""
+from __future__ import annotations
+
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
+
+from ..monitor import Snapshot
+from ..util import human_rate
+from . import theme
+
+GB = 1 << 30
+
+
+class MiniWindow(QWidget):
+    restore_requested = Signal()
+
+    def __init__(self, parent=None):
+        # Qt.Tool keeps it off the alt-tab list; it is a companion window,
+        # not a second application window.
+        super().__init__(parent, Qt.FramelessWindowHint
+                         | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowTitle("Desktop Optimizer — mini")
+        self._drag_offset = None
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        card = QFrame()
+        card.setObjectName("miniCard")
+        outer.addWidget(card)
+        row = QHBoxLayout(card)
+        row.setContentsMargins(10, 6, 6, 6)
+        row.setSpacing(10)
+
+        self._status_dot = QLabel(theme.STATUS_ICON["good"])
+        self._status_dot.setStyleSheet(
+            f"color: {theme.STATUS['good']}; font-size: 11px;")
+        row.addWidget(self._status_dot)
+
+        # Widest value each slot must fit, so the strip never clips text and
+        # never jitters in width as numbers change.
+        widest = {"cpu": "100%", "mem": "100%", "disk": "100%",
+                  "net": "999.9 MB/s", "resp": "9999 ms"}
+        self._metrics = {}
+        for key, label, color in (
+                ("cpu", "CPU", theme.SERIES_CPU),
+                ("mem", "MEM", theme.SERIES_MEM),
+                ("disk", "DSK", theme.SERIES_DISK),
+                ("net", "NET", theme.SERIES_NET_DOWN),
+                ("resp", "RESP", theme.MUTED)):
+            name = QLabel(label)
+            name.setObjectName("miniKey")
+            name.setStyleSheet(f"color: {color};")
+            name.setMinimumWidth(name.fontMetrics().horizontalAdvance(label) + 2)
+            value = QLabel("–")
+            value.setObjectName("miniValue")
+            value.setMinimumWidth(
+                value.fontMetrics().horizontalAdvance(widest[key]) + 4)
+            row.addWidget(name)
+            row.addWidget(value)
+            self._metrics[key] = value
+
+        row.addSpacing(2)
+        restore = QPushButton("▣")
+        restore.setObjectName("miniButton")
+        restore.setToolTip("Back to the full dashboard")
+        restore.setFixedSize(20, 20)
+        restore.setCursor(Qt.PointingHandCursor)
+        restore.clicked.connect(self.restore_requested)
+        row.addWidget(restore)
+
+        self.setFixedSize(self.sizeHint().width(), 34)
+
+    # -- live values ----------------------------------------------------------
+    def update_snapshot(self, snap: Snapshot, ui_lag_ms: float, status: str):
+        self._status_dot.setText(theme.STATUS_ICON[status])
+        self._status_dot.setStyleSheet(
+            f"color: {theme.STATUS[status]}; font-size: 11px;")
+        self._metrics["cpu"].setText(f"{snap.cpu:.0f}%")
+        self._metrics["mem"].setText(f"{snap.mem_percent:.0f}%")
+        self._metrics["disk"].setText(f"{snap.disk_busy:.0f}%")
+        self._metrics["net"].setText(human_rate(snap.net_recv_bps))
+        self._metrics["resp"].setText(f"{ui_lag_ms:.0f} ms")
+
+    # -- placement ------------------------------------------------------------
+    def park_bottom_right(self):
+        """Default position: above the taskbar, near the notification area."""
+        screen = self.screen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        self.move(area.right() - self.width() - 12,
+                  area.bottom() - self.height() - 12)
+
+    def clamp_to_screen(self):
+        """Keep the window reachable if the display layout changed."""
+        screen = self.screen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        pos = self.pos()
+        x = min(max(pos.x(), area.left()), max(area.right() - self.width(),
+                                               area.left()))
+        y = min(max(pos.y(), area.top()), max(area.bottom() - self.height(),
+                                              area.top()))
+        if (x, y) != (pos.x(), pos.y()):
+            self.move(x, y)
+
+    # -- drag to move, double-click to restore --------------------------------
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = (event.globalPosition().toPoint()
+                                 - self.frameGeometry().topLeft())
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        self.restore_requested.emit()
+        event.accept()
+
+    def position(self) -> QPoint:
+        return self.pos()

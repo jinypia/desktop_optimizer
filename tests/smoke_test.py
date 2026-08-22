@@ -114,6 +114,47 @@ def main() -> int:
         win.grab().save(os.path.join(HERE, f"tab_{name}.png"))
 
     print("tabs OK — screenshots written to", HERE)
+
+    # -- mini mode --
+    win._tabs.setCurrentIndex(0)
+    win.enter_mini_mode()
+    app.processEvents()
+    assert win.in_mini_mode(), "mini mode did not activate"
+    assert not win.isVisible(), "dashboard should hide in mini mode"
+    win.on_sample(snap(t0 + 130 * 1.5, cpu=71.0))
+    app.processEvents()
+    mini = win._mini
+    assert mini._metrics["cpu"].text() == "71%", \
+        f"mini CPU not updated: {mini._metrics['cpu'].text()!r}"
+    assert mini.width() < 520 and mini.height() <= 40, \
+        f"mini window too big: {mini.width()}x{mini.height()}"
+    for key, label in mini._metrics.items():     # nothing clipped
+        need = label.fontMetrics().horizontalAdvance(label.text())
+        assert label.width() >= need, \
+            f"mini {key} clipped: {label.text()!r} needs {need}px, " \
+            f"has {label.width()}px"
+    mini.grab().save(os.path.join(HERE, "mini_mode.png"))
+    print(f"mini mode OK — {mini.width()}x{mini.height()} px, "
+          f"CPU {mini._metrics['cpu'].text()}")
+
+    # charts must buffer while hidden, then redraw intact on restore
+    assert win._charts_stale, "charts should be marked stale while hidden"
+    buffered = len(win._chart_cpu._buffers[0])
+    win.exit_mini_mode()
+    app.processEvents()
+    assert not win.in_mini_mode() and win.isVisible(), "restore failed"
+    assert not win._charts_stale, "charts not redrawn on restore"
+    assert len(win._chart_cpu._buffers[0]) == buffered, \
+        "chart history lost while hidden"
+    print(f"restore OK — {buffered} samples of history preserved")
+
+    # -- taskbar (notification area) load icon --
+    from app.ui.tray import load_icon
+    icon = load_icon("good", 71.0)
+    assert not icon.isNull(), "tray load icon failed to render"
+    icon.pixmap(64, 64).save(os.path.join(HERE, "tray_icon.png"))
+    print("tray load icon OK")
+
     print("SMOKE TEST PASS")
     return 0
 

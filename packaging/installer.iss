@@ -9,7 +9,7 @@
 ; Expects PyInstaller output in dist\DesktopOptimizer\ (see build.ps1).
 
 #define AppName "Desktop Optimizer"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 #define AppPublisher "jinypia"
 #define AppURL "https://github.com/jinypia/desktop_optimizer"
 #define AppExeName "DesktopOptimizer.exe"
@@ -44,6 +44,7 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
+LicenseFile=..\LICENSE
 CloseApplications=yes
 CloseApplicationsFilter=*.exe
 RestartApplications=no
@@ -62,6 +63,8 @@ Name: "startupicon"; Description: "Start {#AppName} when I sign in \
 Source: "..\dist\DesktopOptimizer\*"; DestDir: "{app}"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
