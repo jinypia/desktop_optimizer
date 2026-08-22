@@ -25,6 +25,29 @@ automatically.
 
 ## Installation
 
+### Option A — installer (recommended)
+
+Download `DesktopOptimizer-1.0.0-setup.exe` from the
+[releases page](https://github.com/jinypia/desktop_optimizer/releases) and
+run it. Notes:
+
+- **No administrator rights needed.** It installs per-user into
+  `%LOCALAPPDATA%\Programs\Desktop Optimizer`.
+- Creates a Start Menu entry, an optional desktop shortcut, and an
+  optional "start when I sign in" entry (unchecked by default).
+- Uninstall like any other app: Settings → Apps → Desktop Optimizer, or
+  the Start Menu uninstall entry.
+- Python does **not** need to be installed — the interpreter and Qt are
+  bundled.
+- A portable ZIP is also published: unzip anywhere and run
+  `DesktopOptimizer.exe`, no installation at all.
+
+Windows SmartScreen may warn on first run because the executable is not
+code-signed (signing requires a paid certificate). Choose *More info →
+Run anyway*, or unblock the file via its Properties dialog.
+
+### Option B — run from source
+
 Open PowerShell in the project folder and run:
 
 ```powershell
@@ -164,13 +187,52 @@ Also in `app/config.py`: sampling cadence (`SAMPLE_INTERVAL_S`) and chart
 history length (`HISTORY_SAMPLES`). The temp-file age cutoff is
 `TEMP_MIN_AGE_H` in `app/optimizer.py`.
 
+## Building the installer
+
+One command produces the installer and the portable ZIP into
+`dist\installer\`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1
+```
+
+Prerequisites (one-time):
+
+```powershell
+# build tools into your venv (python.org Python, NOT the Store build)
+.venv\Scripts\python -m pip install pyinstaller pillow
+
+# Inno Setup 6, portable, no admin required
+# download innosetup-6.x.x.exe from https://jrsoftware.org/isdl.php then:
+.\innosetup-6.7.3.exe /PORTABLE=1 /VERYSILENT /DIR=%LOCALAPPDATA%\InnoSetup6
+```
+
+The script generates the icon, runs PyInstaller (windowed, onedir), builds
+the Inno Setup installer, and zips the portable bundle. Override paths with
+`-Python`, `-Iscc`, or `-WorkRoot`; skip icon regeneration with `-SkipIcon`.
+
+Build work is staged on a local disk by default (`-WorkRoot`) because this
+project often lives on a network share, where writing ~150 MB of Qt
+binaries is slow.
+
+To bump the version, edit `app/version.py`, then the matching values in
+`packaging/version_info.txt` and `packaging/installer.iss`.
+
 ## Project layout
 
 ```
 main.py                 entry point
 run.bat                 launcher (venv + no console window)
+assets/app.ico          application icon (generated from the tray artwork)
+packaging/
+  build.ps1             one-command build: exe + installer + portable zip
+  desktop_optimizer.spec  PyInstaller spec (windowed onedir, Qt trimmed)
+  installer.iss         Inno Setup script (per-user, no admin)
+  make_icon.py          renders assets/app.ico
+  version_info.txt      Windows version resource for the exe
 app/
   config.py             sampling cadence + alert rules
+  version.py            app name/version (single source of truth)
   diag.py               self-diagnostics: log file + exception hooks
   monitor.py            metrics sampler (QThread + psutil)
   analyzer.py           degradation detection -> alerts + recommendations

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import psutil
 
-from .diag import APP_ROOT
+from .diag import APP_ROOT, IS_FROZEN
 from .util import human_bytes
 
 TEMP_MIN_AGE_H = 24          # only delete temp files untouched for this long
@@ -408,10 +408,13 @@ def restart_graphics_driver() -> ActionResult:
 
 def relaunch_as_admin() -> bool:
     """Start an elevated copy of the app (UAC prompt). Caller quits after."""
-    exe = sys.executable
-    script = os.path.join(APP_ROOT, "main.py")
+    if IS_FROZEN:
+        # sys.executable IS the app; there is no script to pass
+        params = None
+    else:
+        params = '"{}"'.format(os.path.join(APP_ROOT, "main.py"))
     r = ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", exe, f'"{script}"', APP_ROOT, 1)
+        None, "runas", sys.executable, params, APP_ROOT, 1)
     return r > 32
 
 

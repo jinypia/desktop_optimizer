@@ -1,10 +1,14 @@
 """Runtime self-diagnostics: file logging, exception hooks, Qt messages.
 
 The app monitors the system — this module makes sure the app also notices
-its own failures. Everything lands in a rotating log file in the app's own
-logs/ folder. AppData is deliberately avoided: Microsoft Store Python
-virtualizes writes there into its package container, which makes the log
-invisible at the expected path.
+its own failures. Everything lands in a rotating log file.
+
+Log location depends on how the app runs:
+  - installed (frozen): %LOCALAPPDATA%\\DesktopOptimizer\\logs — the
+    install directory must not be assumed writable.
+  - from source: the project's own logs/ folder. AppData is deliberately
+    avoided there because Microsoft Store Python virtualizes writes into
+    its package container, which hides the log from the expected path.
 """
 import atexit
 import logging
@@ -18,14 +22,26 @@ import traceback
 
 from PySide6.QtCore import qInstallMessageHandler
 
-APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOG_DIR = os.path.join(APP_ROOT, "logs")
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+
+if IS_FROZEN:
+    APP_ROOT = os.path.dirname(os.path.abspath(sys.executable))
+    DATA_DIR = os.path.join(
+        os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+        "DesktopOptimizer")
+else:
+    APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    DATA_DIR = APP_ROOT
+
+LOG_DIR = os.path.join(DATA_DIR, "logs")
 LOG_FILE = os.path.join(LOG_DIR, "app.log")
 
 
 def is_store_python() -> bool:
     """True when running under Microsoft Store Python, whose MSIX
     virtualization silently redirects AppData/Temp file operations."""
+    if IS_FROZEN:
+        return False        # bundled interpreter: never the Store build
     base = os.path.realpath(sys.base_prefix).lower()
     return "windowsapps" in base or "pythonsoftwarefoundation" in base
 
@@ -42,14 +58,19 @@ def setup_logging() -> str:
         LOG_FILE, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
     fh.setFormatter(fmt)
 
-    sh = logging.StreamHandler()
-    sh.setFormatter(fmt)
+    # A windowed build (pythonw / PyInstaller --windowed) has no stderr;
+    # attaching a StreamHandler to None would fail on every record.
+    handlers = [fh]
+    if sys.stderr is not None:
+        sh = logging.StreamHandler()
+        sh.setFormatter(fmt)
+        handlers.append(sh)
 
     # The log file may live on a network share: write from a dedicated
     # thread so an SMB stall can never block the GUI or sampler threads.
     q = queue.SimpleQueue()
     root.addHandler(logging.handlers.QueueHandler(q))
-    listener = logging.handlers.QueueListener(q, fh, sh)
+    listener = logging.handlers.QueueListener(q, *handlers)
     listener.start()
     atexit.register(listener.stop)
 

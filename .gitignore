@@ -5,6 +5,11 @@ __pycache__/
 build/
 dist/
 
+# --- Build artifacts (installers, bundles) ---
+*.exe
+*.zip
+*.msi
+
 # --- Virtual environment (machine-specific, ~500 MB) ---
 .venv/
 venv/
@@ -24,6 +29,7 @@ settings.local.json
 # Screenshots / captures of the running dashboard (show hostnames, processes)
 *.png
 *.jpg
+!assets/*.ico
 
 # --- IDE / editor ---
 .idea/

@@ -17,6 +17,7 @@ from app.monitor import MetricsSampler
 from app.ui import theme
 from app.ui.main_window import MainWindow
 from app.ui.tray import TrayIcon, status_icon
+from app.version import APP_NAME, __version__
 
 log = logging.getLogger(__name__)
 
@@ -24,8 +25,18 @@ log = logging.getLogger(__name__)
 def main() -> int:
     log_file = diag.setup_logging()
 
+    # Distinct taskbar identity so the packaged app groups and pins
+    # correctly instead of inheriting the interpreter's identity.
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "jinypia.DesktopOptimizer")
+    except Exception:
+        pass
+
     app = QApplication(sys.argv)
-    app.setApplicationName("Desktop Optimizer")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(__version__)
     app.setQuitOnLastWindowClosed(False)   # closing the window hides to tray
     app.setStyle("Fusion")
     app.setFont(QFont("Segoe UI", 9))   # pyqtgraph text uses the app font
@@ -49,7 +60,9 @@ def main() -> int:
             "the system tray (green/amber/red dot).")
         return 0
 
-    log.info("Starting Desktop Optimizer — Python %s, Qt %s, %s; log: %s",
+    log.info("Starting %s %s (%s) — Python %s, Qt %s, %s; log: %s",
+             APP_NAME, __version__,
+             "installed" if diag.IS_FROZEN else "source",
              platform.python_version(), qVersion(), platform.platform(),
              log_file)
 
