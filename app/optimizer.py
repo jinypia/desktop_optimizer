@@ -280,6 +280,41 @@ def trim_working_sets() -> ActionResult:
         f"Trimmed {trimmed} processes; available memory +{human_bytes(max(gained, 0))}.")
 
 
+def trim_self_working_set() -> int:
+    """Release this app's own resident pages back to Windows.
+
+    Called when the dashboard is hidden: the UI pages nobody is looking at
+    move to the standby list and RSS drops sharply. Pages come back on
+    demand, so restoring the window is unaffected apart from the first
+    repaint. Returns the bytes given up (may be 0).
+    """
+    kernel32 = ctypes.windll.kernel32
+    psapi = ctypes.windll.psapi
+    psapi.EmptyWorkingSet.argtypes = (ctypes.c_void_p,)
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    try:
+        before = psutil.Process().memory_info().rss
+        psapi.EmptyWorkingSet(kernel32.GetCurrentProcess())
+        return max(0, before - psutil.Process().memory_info().rss)
+    except (psutil.Error, OSError):
+        return 0
+
+
+BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+NORMAL_PRIORITY_CLASS = 0x00000020
+
+
+def set_own_priority(background: bool) -> bool:
+    """Run below-normal while hidden so we never compete with foreground
+    apps for CPU; back to normal when the dashboard is on screen."""
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.SetPriorityClass.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+    cls = (BELOW_NORMAL_PRIORITY_CLASS if background
+           else NORMAL_PRIORITY_CLASS)
+    return bool(kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), cls))
+
+
 def purge_standby_list() -> ActionResult:
     """Purge the standby memory list (cached pages). Requires administrator
     rights and the SeProfileSingleProcessPrivilege."""

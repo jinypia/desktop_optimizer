@@ -148,6 +148,37 @@ def main() -> int:
         "chart history lost while hidden"
     print(f"restore OK — {buffered} samples of history preserved")
 
+    # -- background throttling --
+    from app import config
+    from app.monitor import MetricsSampler
+    sampler = MetricsSampler()
+    assert sampler.interval() == config.SAMPLE_INTERVAL_S
+    sampler.set_foreground(False)
+    assert sampler.interval() == config.SAMPLE_INTERVAL_BG_S, \
+        "sampler did not stretch its interval in the background"
+    assert config.PROC_SCAN_EVERY_BG > config.PROC_SCAN_EVERY, \
+        "background process scan must be rarer than foreground"
+
+    flags = []
+    win.foreground_changed.connect(flags.append)
+    win.enter_mini_mode()
+    app.processEvents()
+    assert flags and flags[-1] is False, "hiding did not signal background"
+    assert not win._foreground
+    assert win._lag_timer.interval() == win.RESP_TIMER_BG_MS, \
+        "responsiveness probe not slowed while hidden"
+    bg_stall = win._stall_after_s()
+    win.exit_mini_mode()
+    app.processEvents()
+    assert flags[-1] is True, "restoring did not signal foreground"
+    assert win._lag_timer.interval() == win.RESP_TIMER_MS
+    assert bg_stall > win._stall_after_s(), \
+        "stall threshold must scale with the slower background cadence"
+    print(f"throttling OK — probe {win.RESP_TIMER_MS}/"
+          f"{win.RESP_TIMER_BG_MS} ms, sample "
+          f"{config.SAMPLE_INTERVAL_S}/{config.SAMPLE_INTERVAL_BG_S} s, "
+          f"stall {win._stall_after_s():.0f}/{bg_stall:.0f} s")
+
     # -- taskbar (notification area) load icon --
     from app.ui.tray import load_icon
     icon = load_icon("good", 71.0)

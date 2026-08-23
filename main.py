@@ -88,13 +88,20 @@ def main() -> int:
 
     # Sampler lifecycle: started here, restarted when the watchdog reports
     # a stall (dead/stuck sampler thread).
-    state = {"sampler": None}
+    state = {"sampler": None, "foreground": True}
 
     def start_sampler():
         sampler = MetricsSampler()
         sampler.sample.connect(window.on_sample)
+        sampler.set_foreground(state["foreground"])   # survive restarts
         sampler.start()
         state["sampler"] = sampler
+
+    def on_foreground_changed(foreground: bool):
+        state["foreground"] = foreground
+        sampler = state["sampler"]
+        if sampler is not None:
+            sampler.set_foreground(foreground)
 
     def restart_sampler():
         old = state["sampler"]
@@ -106,6 +113,7 @@ def main() -> int:
         start_sampler()
 
     window.sampler_stalled.connect(restart_sampler)
+    window.foreground_changed.connect(on_foreground_changed)
 
     def shutdown():
         sampler = state["sampler"]

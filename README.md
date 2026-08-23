@@ -97,12 +97,40 @@ the right (status, alerts with recommendations, top CPU processes).
 
 ### The monitor's own overhead
 
-Monitoring must not become its own performance problem, so the app
-polices itself: the sampler thread runs at low priority, the all-process
-scan runs every 2nd cycle and volume scans every 10th, heavy tab views
-refresh only while visible, and the app measures its own CPU/RAM each
-cycle (shown in the vitals strip). If the app itself averages more than
-5% CPU over a minute, it raises a warning alert against itself.
+Monitoring must not become its own performance problem, so the app is
+built to get out of the way — and to prove it, the vitals strip always
+shows its own live cost (`app cost: 0.4% CPU · 62 MB`). If it ever
+averages more than 5% CPU over a minute, it raises a warning alert
+against itself.
+
+**While you're looking at it** (dashboard on screen): samples every
+1.5 s, all-process scan every other sample, responsiveness probed 4×/s.
+The sampler thread runs at low OS priority; volume usage and CPU
+frequency are polled every 10th cycle; the Details and Processes tabs
+refresh only while their tab is open.
+
+**While you're not** (mini mode, tray, or just minimised) it throttles
+itself hard:
+
+| | Dashboard open | Hidden / minimised |
+|---|---|---|
+| Sample interval | 1.5 s | 4 s |
+| All-process scan | every 2nd sample | every 8th sample |
+| Responsiveness probe | 250 ms (precise) | 1 s (coarse) |
+| Process priority | normal | below normal |
+| Charts, cards, vitals strip | drawn | skipped (history still buffered) |
+| Working set | resident | released back to Windows on hide |
+
+Alerts, logging and the stall watchdog keep working throughout — only the
+cost of *displaying* things is dropped. The stall threshold scales with
+the cadence in use, so the slower background rate is never mistaken for a
+freeze. Tune any of it in `app/config.py`.
+
+Measure it yourself any time:
+
+```powershell
+.venv\Scripts\python tests\measure_overhead.py 80
+```
 
 ### Details tab (professional view)
 

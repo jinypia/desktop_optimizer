@@ -1,9 +1,18 @@
 """Central configuration: sampling cadence, alert thresholds, hysteresis."""
 from dataclasses import dataclass
 
-SAMPLE_INTERVAL_S = 1.5      # metrics sampling period
+SAMPLE_INTERVAL_S = 1.5      # metrics sampling period while on screen
+SAMPLE_INTERVAL_BG_S = 4.0   # ... and while hidden (mini mode / tray)
 HISTORY_SAMPLES = 240        # chart history (~6 minutes at 1.5 s)
 TOP_PROCESS_COUNT = 6        # rows in the top-process table
+
+# The all-process scan (top CPU/memory lists) is the sampler's most
+# expensive step — iterating every process on the machine. Run it every
+# Nth cycle: often when someone is watching, rarely when nobody is.
+PROC_SCAN_EVERY = 2
+PROC_SCAN_EVERY_BG = 8
+VOLUME_SCAN_EVERY = 10       # per-drive disk_usage every Nth cycle
+FREQ_SCAN_EVERY = 10         # cpu_freq() every Nth cycle (slow on Windows)
 
 # Volume fullness is checked per drive on every sample (no sustain window)
 DISK_FULL_WARN = 90          # % used

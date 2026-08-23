@@ -37,12 +37,12 @@ STATUS_TEXT = {
 
 
 class MainWindow(QMainWindow):
-    RESP_TIMER_MS = 250      # responsiveness probe period
-    WATCHDOG_MS = 5000       # self-health check period
-    # no samples for this long -> monitoring is considered stalled
-    STALL_AFTER_S = config.SAMPLE_INTERVAL_S * 4 + 5
+    RESP_TIMER_MS = 250         # responsiveness probe, dashboard visible
+    RESP_TIMER_BG_MS = 1000     # ... and while hidden (fewer wakeups)
+    WATCHDOG_MS = 5000          # self-health check period
 
-    sampler_stalled = Signal()   # main() restarts the sampler on this
+    sampler_stalled = Signal()      # main() restarts the sampler on this
+    foreground_changed = Signal(bool)   # drives the sampler's cadence
 
     def __init__(self):
         super().__init__()
@@ -68,6 +68,7 @@ class MainWindow(QMainWindow):
         self._settings = QSettings("jinypia", "DesktopOptimizer")
         self._mini = None
         self._charts_stale = False
+        self._foreground = True
 
         pg.setConfigOptions(antialias=True, background=theme.SURFACE,
                             foreground=theme.MUTED)
@@ -266,10 +267,55 @@ class MainWindow(QMainWindow):
 
     def _on_lag_tick(self):
         now = time.monotonic()
-        lag = max(0.0, (now - self._last_tick) * 1000.0 - self.RESP_TIMER_MS)
+        expected = self._lag_timer.interval()
+        lag = max(0.0, (now - self._last_tick) * 1000.0 - expected)
         self._last_tick = now
         # EMA smooths one-off spikes (window drags, etc.)
         self._ui_lag_ms = 0.7 * self._ui_lag_ms + 0.3 * lag
+
+    # -- foreground / background throttling ------------------------------------
+    def _set_foreground(self, foreground: bool):
+        """Throttle everything we own when nobody is looking at the window.
+
+        Background mode: slower sampling and probing, below-normal process
+        priority so we never compete with foreground apps, and the working
+        set released back to Windows.
+        """
+        if foreground == self._foreground:
+            return
+        if not hasattr(self, "_lag_timer"):
+            return          # state change during construction; nothing to do
+        self._foreground = foreground
+        self.foreground_changed.emit(foreground)
+
+        # fewer timer wakeups while hidden (also easier on battery)
+        self._lag_timer.setInterval(self.RESP_TIMER_MS if foreground
+                                    else self.RESP_TIMER_BG_MS)
+        self._lag_timer.setTimerType(Qt.PreciseTimer if foreground
+                                     else Qt.CoarseTimer)
+        self._last_tick = time.monotonic()
+
+        optimizer.set_own_priority(background=not foreground)
+        if foreground:
+            log.info("Foreground: full cadence restored")
+        else:
+            freed = optimizer.trim_self_working_set()
+            log.info("Background: throttled cadence, below-normal priority, "
+                     "released %s", human_bytes(freed))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._set_foreground(True)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._set_foreground(False)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        # a minimised window is still "visible" to Qt but unreadable to a human
+        if event.type() == event.Type.WindowStateChange:
+            self._set_foreground(not self.isMinimized() and self.isVisible())
 
     # -- self-health watchdog -------------------------------------------------
     def _start_watchdog(self):
@@ -278,10 +324,17 @@ class MainWindow(QMainWindow):
         self._watchdog.timeout.connect(self._check_heartbeat)
         self._watchdog.start()
 
+    def _stall_after_s(self) -> float:
+        """Stall threshold, derived from the cadence actually in use — the
+        background cadence is slower, and must not read as a stall."""
+        interval = (config.SAMPLE_INTERVAL_S if self._foreground
+                    else config.SAMPLE_INTERVAL_BG_S)
+        return interval * 4 + 5
+
     def _check_heartbeat(self):
         """Detect a dead/stuck sampler by its missing heartbeat."""
         age = time.monotonic() - self._last_sample_mono
-        if age > self.STALL_AFTER_S and not self._stalled:
+        if age > self._stall_after_s() and not self._stalled:
             self._stalled = True
             log.error("Monitoring stalled — no samples for %.0f s; "
                       "requesting sampler restart", age)
@@ -374,8 +427,8 @@ class MainWindow(QMainWindow):
         self._sample_count += 1
         lag = self._ui_lag_ms
         # Cards, charts and the vitals strip cost nothing to skip while the
-        # dashboard is hidden (mini mode or minimised to tray).
-        visible = self.isVisible()
+        # dashboard is hidden or minimised (mini mode, tray, taskbar).
+        visible = self._foreground
 
         gb = 1 << 30
         if visible:

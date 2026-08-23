@@ -6,8 +6,10 @@ thread.
 
 Own-overhead budget: the expensive work is throttled so monitoring never
 becomes its own performance problem —
-  - the all-process scan (top lists, count) runs every 2nd cycle,
-  - volume usage runs every 10th cycle,
+  - foreground vs background cadence: while the dashboard is hidden the
+    sample interval stretches and the all-process scan runs far less
+    often, because nothing is displaying those numbers,
+  - volume usage and CPU frequency are polled every Nth cycle only,
   - the sampler measures the app's own CPU/RAM cost and reports it in
     each Snapshot so the UI can display and police it.
 
@@ -27,9 +29,6 @@ from PySide6.QtCore import QThread, Signal
 from . import config
 
 log = logging.getLogger(__name__)
-
-PROC_SCAN_EVERY = 2       # all-process scan every Nth cycle
-VOLUME_SCAN_EVERY = 10    # disk_usage per volume every Nth cycle
 
 
 @dataclass
@@ -82,10 +81,29 @@ class MetricsSampler(QThread):
     def __init__(self, interval_s: float = config.SAMPLE_INTERVAL_S, parent=None):
         super().__init__(parent)
         self._interval = interval_s
+        self._foreground = True
         self._stop = False
 
     def stop(self):
         self._stop = True
+
+    def set_foreground(self, foreground: bool):
+        """Foreground = the dashboard is on screen and someone can read it.
+
+        Background stretches the cadence and thins out the expensive
+        all-process scan. Plain attribute writes: the sampler loop reads
+        them at the top of each cycle, so no locking is needed.
+        """
+        if foreground == self._foreground:
+            return
+        self._foreground = foreground
+        log.info("Sampler cadence: %s (%.1fs interval)",
+                 "foreground" if foreground else "background",
+                 self.interval())
+
+    def interval(self) -> float:
+        return (config.SAMPLE_INTERVAL_S if self._foreground
+                else config.SAMPLE_INTERVAL_BG_S)
 
     def run(self):
         log.info("Metrics sampler started (interval %.1fs, low priority)",
@@ -118,9 +136,10 @@ class MetricsSampler(QThread):
         self._top_cpu, self._top_mem = [], []
         self._proc_count = 0
         self._volumes = []
+        self._freq_mhz = None
 
         while not self._stop:
-            self._sleep(self._interval)
+            self._sleep(self.interval())
             if self._stop:
                 break
             now = time.monotonic()
@@ -137,11 +156,14 @@ class MetricsSampler(QThread):
     def _collect(self, dt: float) -> Snapshot:
         per_core = psutil.cpu_percent(None, percpu=True) or [0.0]
         cpu = sum(per_core) / len(per_core)
-        try:
-            freq = psutil.cpu_freq()
-            freq_mhz = freq.current if freq else None
-        except Exception:
-            freq_mhz = None
+        # cpu_freq() is comparatively slow on Windows and barely moves
+        if self._cycle % config.FREQ_SCAN_EVERY == 1 or self._freq_mhz is None:
+            try:
+                freq = psutil.cpu_freq()
+                self._freq_mhz = freq.current if freq else None
+            except Exception:
+                self._freq_mhz = None
+        freq_mhz = self._freq_mhz
 
         vm = psutil.virtual_memory()
         sw = psutil.swap_memory()
@@ -171,9 +193,11 @@ class MetricsSampler(QThread):
         syscalls_per_s = max(0.0, (stats.syscalls - self._last_cpu_stats.syscalls) / dt)
         self._last_cpu_stats = stats
 
-        if self._cycle % VOLUME_SCAN_EVERY == 1 or not self._volumes:
+        if self._cycle % config.VOLUME_SCAN_EVERY == 1 or not self._volumes:
             self._volumes = self._scan_volumes()
-        if self._cycle % PROC_SCAN_EVERY == 1:
+        scan_every = (config.PROC_SCAN_EVERY if self._foreground
+                      else config.PROC_SCAN_EVERY_BG)
+        if self._cycle % scan_every == 1 or not self._top_cpu:
             self._scan_processes()
 
         try:
