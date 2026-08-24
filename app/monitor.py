@@ -19,6 +19,7 @@ missing heartbeat and asks main() to restart the sampler.
 """
 from __future__ import annotations
 
+import heapq
 import logging
 import time
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ import psutil
 from PySide6.QtCore import QThread, Signal
 
 from . import config
+from .procsnap import ProcessScanner
 
 log = logging.getLogger(__name__)
 
@@ -128,11 +130,10 @@ class MetricsSampler(QThread):
     def _run(self):
         self._ncpu = psutil.cpu_count(logical=True) or 1
         psutil.cpu_percent(None, percpu=True)          # prime system counter
-        for p in psutil.process_iter():                # prime per-process counters
-            try:
-                p.cpu_percent(None)
-            except psutil.Error:
-                pass
+        # The process scanner primes itself: its first scan establishes the
+        # CPU baseline. That replaces a process_iter() priming pass which
+        # cost more than every subsequent scan put together.
+        self._scanner = ProcessScanner(self._ncpu)
         self._self = psutil.Process()
         self._self.cpu_percent(None)
         self._last_disk = psutil.disk_io_counters()
@@ -253,22 +254,19 @@ class MetricsSampler(QThread):
         return volumes
 
     def _scan_processes(self):
-        procs = []
-        for p in psutil.process_iter(["pid", "name", "memory_info"]):
-            try:
-                if p.info["pid"] == 0:      # System Idle Process
-                    continue
-                c = p.cpu_percent(None) / self._ncpu
-                mem = p.info["memory_info"]
-                procs.append(ProcInfo(p.info["pid"], p.info["name"] or "?",
-                                      c, mem.rss if mem else 0))
-            except psutil.Error:
-                continue
-        self._top_cpu = sorted(procs, key=lambda x: x.cpu,
-                               reverse=True)[:config.TOP_PROCESS_COUNT]
-        self._top_mem = sorted(procs, key=lambda x: x.rss,
-                               reverse=True)[:config.TOP_PROCESS_COUNT]
-        self._proc_count = len(procs) + 1
+        """Rank the machine's processes from one kernel snapshot.
+
+        heapq beats sorting the whole list twice to find six rows each way.
+        """
+        rows = self._scanner.scan()
+        top = config.TOP_PROCESS_COUNT
+        self._top_cpu = [ProcInfo(r.pid, r.name, r.cpu, r.rss)
+                         for r in heapq.nlargest(top, rows,
+                                                 key=lambda r: r.cpu)]
+        self._top_mem = [ProcInfo(r.pid, r.name, r.cpu, r.rss)
+                         for r in heapq.nlargest(top, rows,
+                                                 key=lambda r: r.rss)]
+        self._proc_count = len(rows) + 1      # + the System Idle Process
 
     def _sleep(self, seconds: float):
         end = time.monotonic() + seconds

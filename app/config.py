@@ -7,9 +7,11 @@ SAMPLE_INTERVAL_BG_S = 4.0   # nothing on screen (tray only / minimised)
 HISTORY_SAMPLES = 240        # chart history (~6 minutes at 1.5 s)
 TOP_PROCESS_COUNT = 6        # rows in the top-process table
 
-# The all-process scan (top CPU/memory lists) is the sampler's most
-# expensive step — iterating every process on the machine. Run it every
-# Nth cycle: often when someone is watching, rarely when nobody is.
+# The all-process scan (top CPU/memory lists) is still the sampler's
+# largest single step, though app/procsnap.py cut it from ~38 ms to ~5 ms
+# by asking the kernel once instead of per process. Run it every Nth
+# cycle: often when someone is watching, rarely when nobody is. There is
+# now headroom to lower these if fresher top-process data is wanted.
 PROC_SCAN_EVERY = 2
 PROC_SCAN_EVERY_BG = 8
 VOLUME_SCAN_EVERY = 10       # per-drive disk_usage every Nth cycle

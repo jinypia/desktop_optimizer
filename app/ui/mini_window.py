@@ -14,7 +14,7 @@ import logging
 import time
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QWidget,
 )
@@ -55,6 +55,16 @@ class MiniWindow(QWidget):
         self._dock_timer.setInterval(DOCK_KEEP_MS)
         self._dock_timer.setTimerType(Qt.VeryCoarseTimer)
         self._dock_timer.timeout.connect(self._keep_docked)
+
+        # Undocking a monitor can leave a floating strip stranded outside
+        # the visible desktop, where it cannot be reached or dragged back.
+        # The docked strip repairs itself via _keep_docked; the floating one
+        # has nothing watching it, so react to layout changes directly.
+        qapp = QGuiApplication.instance()
+        if qapp is not None:
+            qapp.screenAdded.connect(self._on_screens_changed)
+            qapp.screenRemoved.connect(self._on_screens_changed)
+            qapp.primaryScreenChanged.connect(self._on_screens_changed)
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -161,6 +171,20 @@ class MiniWindow(QWidget):
         if pos != self.pos():
             self.move(pos)
         self._raise_if_due()
+
+    def _on_screens_changed(self, *_):
+        """Re-place the strip after a display layout change.
+
+        Re-docking needs the shell, so while it is known slow we settle for
+        clamping into the remaining desktop — the point is only that the
+        strip stays reachable.
+        """
+        if not self.isVisible():
+            return
+        if self._docked and not guard.degraded:
+            self.dock_to_taskbar()
+        else:
+            self.clamp_to_screen()
 
     def _raise_if_due(self):
         """Re-assert z-order occasionally. Doing this on every tick fought

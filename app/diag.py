@@ -123,11 +123,30 @@ class FreezeWatch(threading.Thread):
         self._events = []          # monotonic times of recent freezes
         self._tripped = False
 
+    POLL_S = 0.5
+    # Our own sleep overshooting this much means this thread was not
+    # scheduled either — the whole process was suspended (sleep, hibernate,
+    # modern standby). That is not a GUI freeze: during a real freeze this
+    # thread keeps running normally and only the main thread is stuck, so
+    # the two cases are cleanly distinguishable from right here.
+    SUSPEND_FACTOR = 10.0
+
+    def _is_suspend_gap(self, slept: float) -> bool:
+        return slept > self.POLL_S * self.SUSPEND_FACTOR
+
     def run(self):
         log = logging.getLogger(__name__)
         frozen_since = None
+        last_poll = time.monotonic()
         while True:
-            time.sleep(0.5)
+            time.sleep(self.POLL_S)
+            now = time.monotonic()
+            slept, last_poll = now - last_poll, now
+            if self._is_suspend_gap(slept):
+                log.info("Process was not scheduled for %.0f s (suspend or "
+                         "resume) — not counting it as a freeze", slept)
+                frozen_since = None
+                continue
             try:
                 age = time.monotonic() - self._get_beat()
             except Exception:

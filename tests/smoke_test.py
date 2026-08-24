@@ -94,6 +94,168 @@ def main() -> int:
     assert win._ui_error_notes == 1, "UI error guard did not record the failure"
     print("watchdog stall/recovery + UI error guard OK")
 
+    # Waking from sleep is not a stall: nothing ran, so no samples arrived.
+    # This used to fire a red status and a critical toast on every resume.
+    stalls.clear()
+    win._stalled = False
+    win._last_watchdog_tick = time.monotonic() - 3600
+    win._last_sample_mono = time.monotonic() - 3600
+    win._check_heartbeat()
+    assert not win._stalled, "resume from sleep misreported as a stall"
+    assert not stalls, "resume from sleep pointlessly restarted the sampler"
+    # A genuinely dead sampler has the opposite shape — ticks keep arriving
+    # on time while the sample age climbs — and must still be caught.
+    win._last_watchdog_tick = time.monotonic()
+    win._last_sample_mono = time.monotonic() - 600
+    win._check_heartbeat()
+    assert win._stalled, "a dead sampler is no longer detected"
+    assert stalls, "a dead sampler did not request a restart"
+    win.on_sample(snap(t0 + 121 * 1.5))        # back to healthy
+    assert not win._stalled
+    print("resume from sleep distinguished from a dead sampler")
+
+    # -- the one-call process collector (app/procsnap.py) --
+    # Cross-checked against psutil on every run: the struct layout is
+    # dictated by the OS, and a wrong layout would not crash, it would
+    # quietly return plausible-looking garbage.
+    import ctypes as _ct
+
+    import psutil as _ps
+
+    from app import procsnap
+
+    if _ct.sizeof(_ct.c_void_p) == 8:
+        assert procsnap.STRUCT_SIZE == procsnap.EXPECTED_SIZE_X64, \
+            (f"SYSTEM_PROCESS_INFORMATION is {procsnap.STRUCT_SIZE} bytes, "
+             f"expected {procsnap.EXPECTED_SIZE_X64} — layout drift")
+
+    scanner = procsnap.ProcessScanner()
+    scanner.scan()                             # establishes the baseline
+    time.sleep(0.4)                            # let some CPU accrue
+    t_scan = time.perf_counter()
+    rows = scanner.scan()
+    scan_ms = (time.perf_counter() - t_scan) * 1000.0
+    assert len(rows) > 50, f"only {len(rows)} processes in the snapshot"
+    assert all(r.pid != 0 for r in rows), "PID 0 (Idle) must be excluded"
+    assert len({r.pid for r in rows}) == len(rows), "duplicate PIDs"
+
+    # a regression to the old per-process path would be ~200x this
+    assert scan_ms < 100.0, f"snapshot took {scan_ms:.0f} ms — fast path lost"
+
+    by_pid = {r.pid: r for r in rows}
+    ps_procs = {}
+    for p in _ps.process_iter(["pid", "name", "num_threads"]):
+        if p.info["pid"]:
+            ps_procs[p.info["pid"]] = p.info
+
+    # coverage: the snapshot must see essentially everything psutil sees
+    both = set(by_pid) & set(ps_procs)
+    assert len(both) > len(ps_procs) * 0.9, \
+        f"snapshot covered only {len(both)} of {len(ps_procs)} processes"
+
+    # names: psutil reports '' for a few protected processes, so only
+    # compare where it actually has an answer
+    named = [pid for pid in both if ps_procs[pid]["name"]]
+    bad_names = [(pid, ps_procs[pid]["name"], by_pid[pid].name)
+                 for pid in named
+                 if ps_procs[pid]["name"] != by_pid[pid].name]
+    assert len(bad_names) <= len(named) * 0.05, \
+        f"names disagree with psutil: {bad_names[:5]}"
+
+    # thread counts come from the same field Task Manager shows
+    thr_bad = [(pid, ps_procs[pid]["num_threads"], by_pid[pid].threads)
+               for pid in both
+               if abs((ps_procs[pid]["num_threads"] or 0)
+                      - by_pid[pid].threads) > 5]
+    assert len(thr_bad) <= len(both) * 0.1, \
+        f"thread counts disagree with psutil: {thr_bad[:5]}"
+
+    # memory and handles, spot-checked where psutil can actually look
+    spot = drift_bad = 0
+    for pid in sorted(both):
+        if spot >= 25:
+            break
+        try:
+            p = _ps.Process(pid)
+            ps_rss, ps_h = p.memory_info().rss, p.num_handles()
+        except _ps.Error:
+            continue
+        spot += 1
+        r = by_pid[pid]
+        # both are live numbers sampled moments apart, so allow real drift
+        if abs(ps_rss - r.rss) > max(ps_rss * 0.5, 16 << 20):
+            drift_bad += 1
+        if abs(ps_h - r.handles) > max(ps_h * 0.5, 64):
+            drift_bad += 1
+    assert spot >= 5, f"only {spot} processes were spot-checkable"
+    assert drift_bad <= 2, \
+        f"{drift_bad} memory/handle readings disagree with psutil"
+
+    # derived rates must be physically possible
+    assert all(0.0 <= r.cpu <= 100.0 for r in rows), \
+        f"CPU out of range: {[r.cpu for r in rows if not 0 <= r.cpu <= 100][:3]}"
+    assert sum(r.cpu for r in rows) <= 100.0 * 2, \
+        f"total CPU {sum(r.cpu for r in rows):.0f}% exceeds the machine"
+    assert all(r.read_bps >= 0 and r.write_bps >= 0 for r in rows)
+    now_ts = time.time()
+    assert all(0 <= r.create_ts <= now_ts + 60 for r in rows), \
+        "implausible process start times"
+
+    # cumulative I/O counters may only ever grow
+    rows2 = scanner.scan()
+    prev_io = {r.pid: (r.read_bytes, r.write_bytes, r.create_ts) for r in rows}
+    for r in rows2:
+        was = prev_io.get(r.pid)
+        if was and was[2] == r.create_ts:
+            assert r.read_bytes >= was[0] and r.write_bytes >= was[1], \
+                f"I/O counters went backwards for {r.name} ({r.pid})"
+
+    # the buffer must grow when the kernel says it is too small
+    small = procsnap.ProcessScanner()
+    small._buf = _ct.create_string_buffer(512)
+    grown = small.scan()
+    assert len(grown) > 50, "scan failed after buffer growth"
+    assert len(small._buf) > 512, "buffer never grew"
+
+    # two scanners must not share baselines (the old cross-thread bug)
+    a, b = procsnap.ProcessScanner(), procsnap.ProcessScanner()
+    a.scan(); b.scan()
+    time.sleep(0.3)
+    a.scan()
+    assert b._prev_t is not None and a._prev_t != b._prev_t, \
+        "scanners are sharing state"
+
+    # Per-process I/O attribution has to be right, not merely present:
+    # naming the process that is actually saturating the disk is the whole
+    # reason this data is collected. Prove it with real writes.
+    import tempfile
+    probe = os.path.join(tempfile.gettempdir(), "procsnap_io_probe.bin")
+    io_scan = procsnap.ProcessScanner()
+    io_scan.scan()
+    blob = b"\0" * (1 << 20)
+    try:
+        with open(probe, "wb") as fh:
+            for _ in range(48):                # 48 MB, then force it out
+                fh.write(blob)
+            fh.flush()
+            os.fsync(fh.fileno())
+        mine = {r.pid: r for r in io_scan.scan()}[os.getpid()]
+    finally:
+        if os.path.exists(probe):
+            os.remove(probe)
+    assert mine.write_bps > 5e6, \
+        f"48 MB of writes attributed as only {mine.write_bps/1e6:.1f} MB/s"
+    print(f"I/O attribution OK — our own 48 MB write showed up as "
+          f"{mine.write_bps/1e6:.0f} MB/s against {mine.name}")
+
+    busy = max(rows, key=lambda r: r.cpu)
+    hot = max(rows, key=lambda r: r.write_bps)
+    print(f"collector OK — {len(rows)} processes in {scan_ms:.2f} ms, "
+          f"{len(both)} cross-checked vs psutil")
+    print(f"  busiest CPU: {busy.name} {busy.cpu:.1f}% · "
+          f"most writes: {hot.name} {hot.write_bps/1e6:.1f} MB/s · "
+          f"handles peak: {max(r.handles for r in rows):,}")
+
     # -- tabs --
     assert win._tabs.count() == 4, f"expected 4 tabs, got {win._tabs.count()}"
     names = ["dashboard", "details", "processes", "optimize"]
@@ -362,6 +524,56 @@ def main() -> int:
     assert fired, "watchdog did not trigger self-healing"
     assert "notification-area" in fired[0], f"vague diagnosis: {fired[0]}"
     print(f"freeze watchdog self-heals: {fired[0]}")
+
+    # ...but being suspended is not a freeze. During a real freeze this
+    # thread keeps running; only a suspend stops it too.
+    assert watch._is_suspend_gap(watch.POLL_S * watch.SUSPEND_FACTOR + 1), \
+        "a multi-minute scheduling gap must read as suspend"
+    assert not watch._is_suspend_gap(watch.POLL_S), \
+        "a normal poll must not read as suspend"
+    print("freeze watchdog ignores suspend gaps")
+
+    # -- a suppressed hint stays owed instead of being silently consumed --
+    class HintTray:
+        notify = TrayIcon.notify
+
+        def __init__(self):
+            self.toasts = []
+
+        def showMessage(self, *a):
+            self.toasts.append(a)
+
+        def isVisible(self):
+            return True
+
+    hint_tray = HintTray()
+    win.set_tray(hint_tray)
+    win._hide_hint_shown = False
+    hint_tray._notify_at = time.monotonic()      # inside the rate limit
+    win.hide_to_tray()
+    assert not hint_tray.toasts, "toast fired while rate-limited"
+    assert not win._hide_hint_shown, \
+        "one-shot hint was consumed even though nothing was shown"
+    hint_tray._notify_at = 0.0                   # rate limit has passed
+    win.hide_to_tray()
+    assert hint_tray.toasts, "the owed hint was never delivered"
+    assert win._hide_hint_shown, "hint not marked shown after delivery"
+    win.set_tray(None)
+    print("suppressed tray hint is retried, not lost")
+
+    # -- a floating strip stranded off-screen must come back --
+    mini.show()
+    mini.set_docked(False, announce=False)
+    mini.move(99000, 99000)                      # monitor went away
+    mini._on_screens_changed()
+    area = mini.screen().availableGeometry()
+    assert mini.x() + mini.width() <= area.right() + 1, \
+        f"strip still off-screen horizontally at {mini.pos()}"
+    assert mini.y() + mini.height() <= area.bottom() + 1, \
+        f"strip still off-screen vertically at {mini.pos()}"
+    print(f"stranded strip recovered to {mini.x()},{mini.y()} "
+          f"inside {area.width()}x{area.height()}")
+    mini.hide()
 
     # -- taskbar (notification area) load icon --
     from app.ui.tray import load_icon

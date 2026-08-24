@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import optimizer
+from ..procsnap import ProcessScanner
 from ..util import human_bytes
 from .workers import Worker
 
@@ -34,61 +35,40 @@ class _NumItem(QTableWidgetItem):
         return (self.data(Qt.UserRole) or 0) < (other.data(Qt.UserRole) or 0)
 
 
-def _scan_processes(cache: dict):
-    """Full process scan using a PRIVATE Process cache.
+def _scan_processes(scanner, user_cache: dict):
+    """Full process scan from one kernel snapshot (see app/procsnap.py).
 
-    psutil.process_iter shares cached objects (and their .info dicts)
-    globally — using it here would race the sampler thread's iteration
-    and cross-reset per-process cpu_percent baselines. A private cache
-    keeps this scan independent.
+    Everything the table shows except the owner comes straight out of that
+    single call. The owner is the one field the snapshot has no room for,
+    so it is looked up once per process and cached for its lifetime —
+    a process cannot change owner, so re-asking every 3 s was pure waste.
+
+    This replaces a psutil scan that cost 553 ms per refresh, 484 ms of it
+    inside num_threads() alone.
     """
-    ncpu = psutil.cpu_count(logical=True) or 1
-    prio_names = {v: k for k, v in optimizer.PRIORITY_CLASSES.items()}
-    alive = set(psutil.pids())
-    for pid in list(cache):
-        if pid not in alive:
-            del cache[pid]
     rows = []
-    for pid in alive:
-        if pid == 0:
-            continue
-        p = cache.get(pid)
-        if p is None:
-            try:
-                p = psutil.Process(pid)
-            except psutil.Error:
-                continue
-            cache[pid] = p
-        try:
-            with p.oneshot():
-                name = p.name() or "?"
-                cpu = p.cpu_percent(None) / ncpu
-                try:
-                    rss = p.memory_info().rss
-                except psutil.Error:
-                    rss = 0
-                try:
-                    user = (p.username() or "").split("\\")[-1]
-                except psutil.Error:
-                    user = ""
-                try:
-                    threads = p.num_threads()
-                except psutil.Error:
-                    threads = 0
-                try:
-                    prio = prio_names.get(p.nice(), "")
-                except psutil.Error:
-                    prio = ""
-                try:
-                    started = p.create_time()
-                except psutil.Error:
-                    started = 0.0
-        except psutil.Error:
-            continue
-        rows.append({"pid": pid, "name": name, "user": user, "cpu": cpu,
-                     "rss": rss, "threads": threads, "prio": prio,
-                     "started": started})
+    for r in scanner.scan():
+        key = (r.pid, r.create_ts)
+        user = user_cache.get(key)
+        if user is None:
+            user = _owner(r.pid)
+            user_cache[key] = user
+        rows.append({"pid": r.pid, "name": r.name, "user": user,
+                     "cpu": r.cpu, "rss": r.rss, "threads": r.threads,
+                     "prio": r.priority_label, "started": r.create_ts})
+    if len(user_cache) > 4096:                # exited processes, eventually
+        live = {(r["pid"], r["started"]) for r in rows}
+        for key in [k for k in user_cache if k not in live]:
+            del user_cache[key]
     return rows
+
+
+def _owner(pid: int) -> str:
+    """Account name for a process, or "" when Windows will not say."""
+    try:
+        return (psutil.Process(pid).username() or "").split("\\")[-1]
+    except psutil.Error:
+        return ""
 
 
 class ProcessTab(QWidget):
@@ -99,7 +79,10 @@ class ProcessTab(QWidget):
         self._pool = QThreadPool.globalInstance()
         self._scanning = False
         self._active = False
-        self._proc_cache = {}          # pid -> psutil.Process (private)
+        # Own scanner: its buffer and CPU baseline stay independent of the
+        # sampler thread's, which is why no locking is needed here.
+        self._scanner = ProcessScanner()
+        self._user_cache = {}          # (pid, create_ts) -> account name
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 8, 4, 4)
@@ -164,7 +147,8 @@ class ProcessTab(QWidget):
         if self._scanning:
             return
         self._scanning = True
-        worker = Worker(lambda: _scan_processes(self._proc_cache))
+        worker = Worker(lambda: _scan_processes(self._scanner,
+                                                self._user_cache))
         worker.signals.done.connect(self._scan_done)
         self._pool.start(worker)
 

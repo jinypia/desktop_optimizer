@@ -366,7 +366,24 @@ class MainWindow(QMainWindow):
         self._watchdog = QTimer(self)
         self._watchdog.setInterval(self.WATCHDOG_MS)
         self._watchdog.timeout.connect(self._check_heartbeat)
+        self._last_watchdog_tick = time.monotonic()
         self._watchdog.start()
+
+    # A watchdog tick that arrives this much later than scheduled means the
+    # process was not being scheduled at all — sleep, hibernation, modern
+    # standby, or a long stretch of starvation.
+    RESUME_GAP_FACTOR = 2.0
+    # ...and if that outage accounts for most of the missing samples, the
+    # sampler is not dead, it was suspended along with everything else. A
+    # genuinely dead sampler shows the opposite shape: ticks keep arriving
+    # on time (small gap) while the sample age climbs (large age).
+    RESUME_GAP_RATIO = 0.5
+
+    def _resumed_from_suspend(self, now: float, age: float) -> bool:
+        gap = now - self._last_watchdog_tick
+        self._last_watchdog_tick = now
+        return (gap > self.WATCHDOG_MS / 1000.0 * self.RESUME_GAP_FACTOR
+                and gap > age * self.RESUME_GAP_RATIO)
 
     def _stall_after_s(self) -> float:
         """Stall threshold, derived from the cadence actually in use — the
@@ -376,7 +393,17 @@ class MainWindow(QMainWindow):
     def _check_heartbeat(self):
         """Detect a dead/stuck sampler by its missing heartbeat."""
         self._maybe_retry_shell()
-        age = time.monotonic() - self._last_sample_mono
+        now = time.monotonic()
+        age = now - self._last_sample_mono
+        if self._resumed_from_suspend(now, age):
+            # Waking from sleep is not a fault: nothing was running, so of
+            # course no samples arrived. Alerting here fired a red status
+            # and a critical toast on every single resume. Give the sampler
+            # one fresh interval to report in instead.
+            log.info("Resumed after %.0f s not running — rearming the "
+                     "heartbeat instead of reporting a stall", age)
+            self._last_sample_mono = now
+            return
         if age > self._stall_after_s() and not self._stalled:
             self._stalled = True
             log.error("Monitoring stalled — no samples for %.0f s; "
@@ -507,9 +534,11 @@ class MainWindow(QMainWindow):
             self._mini.hide()
         self.hide()
         self._sync_view_mode()
+        # Only burn the one-shot hint if the toast actually went out —
+        # notify() suppresses while rate-limited or degraded, and a hint
+        # nobody saw must still be owed.
         if self._tray and not self._hide_hint_shown:
-            self._hide_hint_shown = True
-            self._tray.notify(
+            self._hide_hint_shown = self._tray.notify(
                 "Still monitoring",
                 "Desktop Optimizer keeps running in the notification area. "
                 "Right-click its icon for the dashboard, mini mode or exit.")
@@ -782,8 +811,7 @@ class MainWindow(QMainWindow):
         event.ignore()
         self.enter_mini_mode()
         if not self._hide_hint_shown:
-            self._hide_hint_shown = True
-            self._tray.notify(
+            self._hide_hint_shown = self._tray.notify(
                 "Still monitoring",
                 "Desktop Optimizer is in mini mode. Double-click the strip "
                 "for the dashboard; right-click it for more options.")

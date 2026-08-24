@@ -176,6 +176,29 @@ cost of *displaying* things is dropped. The stall threshold scales with
 the cadence in use, so the slower background rate is never mistaken for a
 freeze. Tune any of it in `app/config.py`.
 
+**How the process scan got cheap.** Walking every process is by far the
+most expensive thing a monitor does, so `app/procsnap.py` asks Windows
+once — `NtQuerySystemInformation(SystemProcessInformation)` returns the
+name, ids, thread and handle counts, memory, CPU times and per-process
+I/O byte counters for *every* process in a single kernel call. Going
+through psutil instead means one or more syscalls per process per field.
+Measured on an 8-CPU / 270-process machine:
+
+| Scan | Before | After |
+|---|---|---|
+| Sampler's top-process scan | 38 ms | 5.0 ms |
+| Processes tab refresh | 553 ms | 3.8 ms |
+| Processes tab, while open | 2.3% of the machine | 0.016% |
+
+The old Processes tab spent 484 ms of its 553 ms inside psutil's
+`num_threads()`, which on Windows takes that same whole-machine snapshot
+once *per process* — 270 snapshots to read 270 integers. (`oneshot()`
+does not help; it does not cache that field.) Each consumer owns its own
+scanner, so the reusable buffer and the CPU-delta baselines stay
+per-thread and no locking is needed. The smoke test cross-checks every
+field against psutil on each run, because a wrong struct layout would not
+crash — it would quietly return plausible-looking numbers.
+
 Measure it yourself any time:
 
 ```powershell
@@ -362,6 +385,7 @@ app/
   version.py            app name/version (single source of truth)
   diag.py               self-diagnostics: log file + exception hooks
   monitor.py            metrics sampler (QThread + psutil)
+  procsnap.py           every process in one kernel call (see below)
   analyzer.py           degradation detection -> alerts + recommendations
   optimizer.py          one-click cleanup actions (user-triggered only)
   util.py               formatting helpers
@@ -403,6 +427,13 @@ The app monitors its own health too:
 - **Freeze forensics** — a watchdog thread monitors the GUI thread; if the
   window is unresponsive for 2+ seconds, the log records the exact stack
   it was stuck in and the total freeze duration after recovery.
+- **Sleep and resume are not faults** — waking from sleep, hibernation or
+  modern standby means nothing was running, so of course no samples
+  arrived. Both watchdogs recognise the difference: a suspended process
+  shows a gap in the watchdog's *own* schedule, while a genuinely dead
+  collector keeps ticking on time as the data goes stale. Resuming
+  therefore rearms quietly (one line in the log) instead of flagging a
+  stall or counting a freeze.
 - **Reduced mode (automatic)** — the app does not just report problems, it
   gets out of them. Everything it sends to the Windows shell (tray icon,
   tooltip, toast notifications, taskbar position checks) is a *synchronous*
