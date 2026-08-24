@@ -24,6 +24,7 @@ from PySide6.QtWidgets import QApplication            # noqa: E402
 from app.monitor import ProcInfo, Snapshot, VolumeInfo   # noqa: E402
 from app.ui import theme                                 # noqa: E402
 from app.ui.main_window import MainWindow                # noqa: E402
+from app.ui.tray import TrayIcon                         # noqa: E402
 
 GB = 1 << 30
 
@@ -103,14 +104,18 @@ def main() -> int:
             win.on_sample(snap(t0 + 122 * 1.5))
             app.processEvents()
         if idx == 2:                           # Processes scans for real
-            deadline = time.time() + 15
-            while (time.time() < deadline
+            # Generous: a full process scan is slow on a loaded machine,
+            # and this test is expected to run on exactly those.
+            started = time.time()
+            while (time.time() - started < 60
                    and win._processes._table.rowCount() == 0):
                 app.processEvents()
                 time.sleep(0.1)
             rows = win._processes._table.rowCount()
-            assert rows > 10, f"process scan returned only {rows} rows"
-            print(f"process scan found {rows} processes")
+            assert rows > 10, (f"process scan returned only {rows} rows "
+                               f"after {time.time() - started:.0f}s")
+            print(f"process scan found {rows} processes "
+                  f"in {time.time() - started:.1f}s")
         win.grab().save(os.path.join(HERE, f"tab_{name}.png"))
 
     print("tabs OK — screenshots written to", HERE)
@@ -241,6 +246,122 @@ def main() -> int:
 
     print(f"docking OK — strip {mini.width()}x{mini.height()} "
           f"fits a {bar.height()}px taskbar")
+
+    # -- proactive self-healing when the shell blocks us --
+    from app.ui import shellguard
+    from app.ui.shellguard import guard
+
+    guard.restore()                              # start from a clean state
+    assert not guard.degraded
+
+    slow_calls = []
+
+    def slow_shell():                            # pretend explorer is busy
+        time.sleep((shellguard.SLOW_MS + 50) / 1000.0)
+        slow_calls.append(1)
+
+    for _ in range(shellguard.TRIP_AFTER):
+        guard.call("test shell call", slow_shell)
+    assert len(slow_calls) == shellguard.TRIP_AFTER
+    assert guard.degraded, "guard did not degrade after repeated slow calls"
+    assert "slowly" in guard.reason, f"unhelpful reason: {guard.reason!r}"
+    print(f"shell guard degraded after {shellguard.TRIP_AFTER} slow calls")
+
+    # the guard listener must marshal onto the GUI thread, never touch
+    # widgets from the caller's thread (that crashed the app once)
+    import threading as _th
+    seen_thread = []
+    guard.restore()
+    win.shell_state_changed.connect(
+        lambda *_: seen_thread.append(_th.current_thread().name))
+
+    def trip_from_worker():
+        guard.degrade("tripped from a worker thread")
+
+    t = _th.Thread(target=trip_from_worker, name="worker")
+    t.start()
+    t.join()
+    for _ in range(20):                          # let the queued slot run
+        app.processEvents()
+        time.sleep(0.02)
+    assert seen_thread, "shell_state_changed never reached a slot"
+    assert seen_thread[-1] == "MainThread", \
+        f"slot ran on {seen_thread[-1]}, not the GUI thread"
+    print("guard callback marshalled to the GUI thread")
+
+    # degraded mode must be visible to the user and must stop the chatter
+    log_text = win._optimize.log.toPlainText()
+    assert "Reduced mode" in log_text, "degradation not reported to the user"
+    assert any("reduced mode" in win._alerts.item(i).text().lower()
+               for i in range(win._alerts.count())), \
+        "no alert raised for reduced mode"
+    from app.ui.tray import load_icon, status_icon
+    icon_calls = []
+
+    class FakeTray:
+        def setIcon(self, icon): icon_calls.append("icon")
+        def setToolTip(self, tip): icon_calls.append("tip")
+        def showMessage(self, *a): icon_calls.append("toast")
+        set_status = TrayIcon.set_status
+        notify = TrayIcon.notify
+
+    fake = FakeTray()
+    guard.restore()                              # rate-limit test needs a
+    icon_calls.clear()                           # healthy shell
+    fake.set_status("good", "tooltip", load=37.0)
+    assert icon_calls.count("icon") == 1, \
+        f"expected one icon push, got {icon_calls}"
+    icon_calls.clear()
+    for _ in range(5):                           # rapid repeat calls
+        fake.set_status("good", "tooltip", load=38.0)
+    assert not icon_calls, f"tray was hammered while rate-limited: {icon_calls}"
+    print("tray updates rate-limited (no push within the interval)")
+
+    # while degraded the tray must be completely silent: a single
+    # setToolTip was measured blocking the GUI thread for 13 seconds
+    guard.degrade("test: verifying the tray goes silent")
+    assert guard.degraded
+    icon_calls.clear()
+    fake._icon_key = None
+    fake._tip_at = 0.0
+    fake.set_status("critical", "tooltip", load=99.0)
+    assert not icon_calls, f"tray written to while degraded: {icon_calls}"
+    assert fake.notify("t", "b", "warning") is False, \
+        "toast fired while the shell was known slow"
+    assert "toast" not in icon_calls
+    print("tray fully silent while degraded (no icon, tooltip or toast)")
+    guard.restore()
+    assert fake.notify("t", "b", "warning") is True, "toast never fires"
+    assert fake.notify("t", "b", "critical") is False, \
+        "toasts must be rate-limited, not fired back to back"
+    print("toasts suppressed while degraded, and rate-limited otherwise")
+    guard.degrade("re-arm for the remaining assertions")
+
+    # docking must stand still rather than poll a slow shell
+    mini_docked_before = mini.pos()
+    mini._keep_docked()
+    assert mini.pos() == mini_docked_before, \
+        "dock polling should be skipped in degraded mode"
+
+    # ... and recovery is automatic
+    guard.restore()
+    assert not guard.degraded
+    assert "responsive again" in win._optimize.log.toPlainText()
+    print("recovery restores full behaviour")
+
+    # the freeze watchdog must trigger the same self-healing
+    fired = []
+    watch = __import__("app.diag", fromlist=["diag"]).FreezeWatch(
+        lambda: time.monotonic(), on_repeated_freeze=fired.append,
+        trip_after=2, trip_window_s=60)
+    watch._note_freeze('File "app\\ui\\tray.py", line 1, in set_status',
+                       __import__("logging").getLogger("test"))
+    assert not fired, "tripped too early"
+    watch._note_freeze('File "app\\ui\\tray.py", line 1, in set_status',
+                       __import__("logging").getLogger("test"))
+    assert fired, "watchdog did not trigger self-healing"
+    assert "notification-area" in fired[0], f"vague diagnosis: {fired[0]}"
+    print(f"freeze watchdog self-heals: {fired[0]}")
 
     # -- taskbar (notification area) load icon --
     from app.ui.tray import load_icon

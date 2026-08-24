@@ -403,6 +403,21 @@ The app monitors its own health too:
 - **Freeze forensics** — a watchdog thread monitors the GUI thread; if the
   window is unresponsive for 2+ seconds, the log records the exact stack
   it was stuck in and the total freeze duration after recovery.
+- **Reduced mode (automatic)** — the app does not just report problems, it
+  gets out of them. Everything it sends to the Windows shell (tray icon,
+  tooltip, toast notifications, taskbar position checks) is a *synchronous*
+  cross-process call that blocks whenever `explorer.exe` is busy — on a
+  loaded machine a single toast has been measured blocking for **10
+  seconds**. So each of those calls is timed, and after a few slow ones —
+  or after the watchdog sees repeated freezes — the app automatically:
+  - drops the live numeric tray icon back to a static status icon,
+  - stops toast notifications and taskbar position tracking,
+  - tells you in the alerts panel and the log what it paused and why.
+
+  Monitoring, alerting and cleanups keep running throughout; only the
+  chatter that was freezing the window stops. It retries after five
+  minutes and restores everything once Windows is responsive again. No
+  action needed from you.
 
 Other common issues:
 

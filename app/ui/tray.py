@@ -1,4 +1,13 @@
-"""System-tray presence: live status icon, menu, notifications."""
+"""System-tray presence: live status icon, menu, notifications.
+
+Every method here that touches the notification area goes through
+shellguard: `setIcon`, `setToolTip` and `showMessage` all call
+`Shell_NotifyIcon`, which blocks the GUI thread whenever explorer.exe is
+busy. They are therefore rate-limited, and in degraded mode the live
+numeric icon is replaced by a single static one.
+"""
+import time
+
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import (
     QAction, QColor, QFont, QIcon, QPainter, QPen, QPixmap,
@@ -6,6 +15,20 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from . import theme
+from .shellguard import guard
+
+# The notification area is the single most expensive thing we touch, so
+# updates are deliberately sparse: the icon only when the coarse load
+# bucket changes, the tooltip only occasionally (nobody sees it unless
+# they hover).
+ICON_MIN_INTERVAL_S = 5.0
+TOOLTIP_MIN_INTERVAL_S = 15.0
+LOAD_BUCKET = 10        # redraw only per 10% of load
+# Toasts are the worst of the bunch: showMessage has been measured
+# blocking the GUI thread for 10+ seconds on a loaded machine. Never fire
+# them in bursts, and not at all while the shell is struggling — the alert
+# is still in the alerts panel, the log and the strip's status colour.
+NOTIFY_MIN_INTERVAL_S = 60.0
 
 
 _ICON_CACHE = {}
@@ -126,26 +149,64 @@ class TrayIcon(QSystemTrayIcon):
             self.open_requested.emit()
 
     def set_status(self, status: str, tooltip: str, load: float | None = None):
-        """Update the notification-area icon.
+        """Update the notification-area icon, sparingly.
 
-        With `load`, the icon shows live CPU % (quantised, so the repaint
-        happens only when the displayed number actually changes).
+        Each call into the shell can block for seconds when explorer is
+        busy, so the icon is only pushed when its coarse bucket changes and
+        at most every few seconds; the tooltip even less often. In degraded
+        mode the numeric readout is dropped for a static status icon.
         """
-        if load is None:
-            key = (status, None)
-            icon = status_icon(status)
-        else:
-            key = (status, int(load) // LOAD_STEP)
-            icon = load_icon(status, load)
-        if key != getattr(self, "_icon_key", None):
-            self._icon_key = key
-            self.setIcon(icon)
-        self.setToolTip(tooltip)
+        # While degraded, write nothing to the notification area at all.
+        # A single setToolTip has been measured blocking for 13 s on a
+        # struggling shell; the status is still in the mini strip, the
+        # alerts panel and the log.
+        if guard.degraded:
+            return
 
-    def notify(self, title: str, body: str, level: str = "info"):
+        now = time.monotonic()
+        if load is None or not guard.live_icon_allowed:
+            key = (status, None)
+            icon_for = lambda: status_icon(status)
+        else:
+            key = (status, int(load) // LOAD_BUCKET)
+            icon_for = lambda: load_icon(status, load)
+
+        # Health changes are worth showing immediately; load is not.
+        urgent = key[0] != getattr(self, "_icon_key", (None,))[0]
+        due = now - getattr(self, "_icon_at", 0.0) >= ICON_MIN_INTERVAL_S
+        if key != getattr(self, "_icon_key", None) and (urgent or due):
+            self._icon_key = key
+            self._icon_at = now
+            guard.call("tray setIcon", self.setIcon, icon_for())
+
+        if now - getattr(self, "_tip_at", 0.0) >= TOOLTIP_MIN_INTERVAL_S:
+            self._tip_at = now
+            guard.call("tray setToolTip", self.setToolTip, tooltip)
+
+    def show_static_icon(self, status: str):
+        """One cheap icon push, used when entering degraded mode."""
+        self._icon_key = (status, None)
+        self._icon_at = time.monotonic()
+        guard.call("tray setIcon (static)", self.setIcon, status_icon(status))
+
+    def notify(self, title: str, body: str, level: str = "info") -> bool:
+        """Raise a Windows toast. Returns False if it was suppressed.
+
+        Suppressed while the shell is slow, and never more than one per
+        NOTIFY_MIN_INTERVAL_S: a burst of alerts would otherwise mean a
+        burst of multi-second GUI stalls.
+        """
+        if guard.degraded:
+            return False
+        now = time.monotonic()
+        if now - getattr(self, "_notify_at", 0.0) < NOTIFY_MIN_INTERVAL_S:
+            return False
+        self._notify_at = now
         icon = {
             "info": QSystemTrayIcon.Information,
             "warning": QSystemTrayIcon.Warning,
             "critical": QSystemTrayIcon.Critical,
         }.get(level, QSystemTrayIcon.Information)
-        self.showMessage(title, body, icon, 8000)
+        guard.call("tray showMessage", self.showMessage,
+                   title, body, icon, 8000)
+        return True

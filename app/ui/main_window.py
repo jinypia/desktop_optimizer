@@ -16,10 +16,10 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config, optimizer
-from ..analyzer import Alert, Analyzer
+from ..analyzer import SEVERITY_RANK, Alert, Analyzer
 from ..monitor import MetricsSampler, Snapshot
 from ..util import human_bytes, human_rate
-from . import theme
+from . import shellguard, theme
 from .details_tab import DetailsTab
 from .mini_window import MiniWindow
 from .optimize_tab import OptimizeTab
@@ -44,6 +44,11 @@ class MainWindow(QMainWindow):
     sampler_stalled = Signal()      # main() restarts the sampler on this
     view_mode_changed = Signal(str)  # "dashboard" | "mini" | "hidden"
     quit_requested = Signal()       # from the mini strip's context menu
+    # Emitted from whichever thread trips the shell guard (often the freeze
+    # watchdog). Connected to a slot on this object, so Qt queues it onto
+    # the GUI thread — touching widgets from the watchdog thread is a
+    # threading violation and crashed the app once already.
+    shell_state_changed = Signal(bool, str)
 
     def __init__(self):
         super().__init__()
@@ -63,6 +68,14 @@ class MainWindow(QMainWindow):
         self._last_sample_mono = time.monotonic()
         self._stalled = False
         self._ui_error_notes = 0
+        self._last_trim = 0.0
+        self._freeze_watch = None
+        self.shell_state_changed.connect(self._on_shell_state_changed)
+        # The listener only emits — never touch widgets on the caller's
+        # thread. Signal emission itself is thread-safe.
+        shellguard.guard.set_listener(
+            lambda degraded, reason:
+                self.shell_state_changed.emit(degraded, reason))
         # ~60 s of own-overhead history; warns if the app itself gets heavy
         self._self_hist = deque(maxlen=40)
         self._self_warned = False
@@ -316,12 +329,23 @@ class MainWindow(QMainWindow):
 
         if showing:
             log.info("View: dashboard — full cadence restored")
-        elif previous == "dashboard":
+        elif previous == "dashboard" and self._trim_is_due():
             freed = optimizer.trim_self_working_set()
             log.info("View: %s — throttled cadence, below-normal priority, "
                      "released %s", mode, human_bytes(freed))
         else:
             log.info("View: %s", mode)
+
+    TRIM_MIN_INTERVAL_S = 120.0
+
+    def _trim_is_due(self) -> bool:
+        """Trimming our own working set is a heavy syscall; toggling views
+        repeatedly must not thrash it."""
+        now = time.monotonic()
+        if now - self._last_trim < self.TRIM_MIN_INTERVAL_S:
+            return False
+        self._last_trim = now
+        return True
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -351,6 +375,7 @@ class MainWindow(QMainWindow):
 
     def _check_heartbeat(self):
         """Detect a dead/stuck sampler by its missing heartbeat."""
+        self._maybe_retry_shell()
         age = time.monotonic() - self._last_sample_mono
         if age > self._stall_after_s() and not self._stalled:
             self._stalled = True
@@ -372,6 +397,49 @@ class MainWindow(QMainWindow):
                     "Check the log (tray menu → Open log folder) if this "
                     "repeats.", level="critical")
             self.sampler_stalled.emit()
+
+    # -- self-healing ------------------------------------------------------------
+    def on_repeated_freeze(self, diagnosis: str):
+        """Called from the freeze watchdog thread — act, don't just log.
+
+        The app sheds the shell traffic that blocks the GUI thread rather
+        than leaving the user with an unresponsive window.
+        """
+        shellguard.guard.degrade(diagnosis)
+
+    @Slot(bool, str)
+    def _on_shell_state_changed(self, degraded: bool, reason: str):
+        """Reflect degraded mode in the UI. Always runs on the GUI thread —
+        it is reached through shell_state_changed, never called directly."""
+        if degraded:
+            self._log_line(
+                f"⚠ Reduced mode: {reason}. The live taskbar readout and "
+                "position tracking are paused; monitoring continues. "
+                "This lifts automatically once Windows responds normally.")
+            self._add_alert(Alert(
+                "self_degraded", "warning", "Desktop Optimizer reduced mode",
+                f"Paused features that were blocking the interface — "
+                f"{reason}.",
+                ["Monitoring, alerts and cleanups all keep working",
+                 "Normal behaviour returns automatically; see the log for "
+                 "details"],
+                time.time()))
+            if self._tray:
+                # one cheap push, then the tray goes silent until recovery
+                self._tray.show_static_icon(self._analyzer.status())
+        else:
+            self._log_line("✓ Windows is responsive again — full behaviour "
+                           "restored.")
+            if self._freeze_watch is not None:
+                self._freeze_watch.rearm()
+
+    def set_freeze_watch(self, watch):
+        self._freeze_watch = watch
+
+    def _maybe_retry_shell(self):
+        """Probe once in a while whether the shell recovered."""
+        if shellguard.guard.due_for_retry():
+            shellguard.guard.restore()
 
     # -- tab lifecycle -----------------------------------------------------------
     def _on_tab_changed(self, _index: int):
@@ -412,9 +480,12 @@ class MainWindow(QMainWindow):
         """Shrink to the compact strip; the dashboard hides entirely."""
         mini = self._ensure_mini()
         self._processes.set_active(False)      # stop scanning while hidden
-        self.hide()
+        # Show the strip *before* hiding the dashboard: hiding first made
+        # the app flip through "hidden" for a few milliseconds, which cost
+        # a pointless working-set trim on every single toggle.
         mini.show()
         mini.raise_()
+        self.hide()
         self._sync_view_mode()
 
     def exit_mini_mode(self):
@@ -520,12 +591,17 @@ class MainWindow(QMainWindow):
                 f"CPU {snap.cpu:.0f}% · MEM {snap.mem_percent:.0f}% · "
                 f"{STATUS_TEXT[status]}",
                 load=snap.cpu)
-            for alert in events:
-                if alert.severity in ("warning", "critical"):
-                    body = alert.detail
-                    if alert.recommendations:
-                        body += "\n" + alert.recommendations[0]
-                    self._tray.notify(alert.title, body, level=alert.severity)
+            # One toast for the worst thing that happened, not one each:
+            # every toast is a blocking shell call.
+            worst = max((a for a in events
+                         if a.severity in ("warning", "critical")),
+                        key=lambda a: SEVERITY_RANK[a.severity],
+                        default=None)
+            if worst is not None:
+                body = worst.detail
+                if worst.recommendations:
+                    body += "\n" + worst.recommendations[0]
+                self._tray.notify(worst.title, body, level=worst.severity)
 
         self._watch_self_overhead(snap)
 

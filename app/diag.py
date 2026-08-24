@@ -104,13 +104,24 @@ class FreezeWatch(threading.Thread):
     When the GUI stops responding for `threshold_s`, logs the exact stack
     the main thread is stuck in — hard evidence for "sometimes it gets no
     response" reports — and logs the total duration once it recovers.
+
+    It does not just observe: after `trip_after` freezes inside
+    `trip_window_s` it calls `on_repeated_freeze(diagnosis)` so the app can
+    shed whatever is blocking it, without waiting for the user to notice.
     """
 
-    def __init__(self, get_beat, threshold_s: float = 2.0):
+    def __init__(self, get_beat, threshold_s: float = 2.0,
+                 on_repeated_freeze=None, trip_after: int = 3,
+                 trip_window_s: float = 120.0):
         super().__init__(name="FreezeWatch", daemon=True)
         self._get_beat = get_beat
         self._threshold = threshold_s
         self._main_ident = threading.main_thread().ident
+        self._on_repeated = on_repeated_freeze
+        self._trip_after = trip_after
+        self._trip_window = trip_window_s
+        self._events = []          # monotonic times of recent freezes
+        self._tripped = False
 
     def run(self):
         log = logging.getLogger(__name__)
@@ -128,7 +139,41 @@ class FreezeWatch(threading.Thread):
                          if frame else "(stack unavailable)")
                 log.warning("GUI thread unresponsive for %.1f s — "
                             "currently stuck at:\n%s", age, stack)
+                self._note_freeze(stack, log)
             elif age < self._threshold / 2 and frozen_since is not None:
                 log.warning("GUI thread recovered after %.1f s",
                             time.monotonic() - frozen_since)
                 frozen_since = None
+
+    def _note_freeze(self, stack: str, log):
+        now = time.monotonic()
+        self._events = [t for t in self._events
+                        if now - t < self._trip_window]
+        self._events.append(now)
+        if self._tripped or len(self._events) < self._trip_after:
+            return
+        self._tripped = True
+        self._events.clear()
+        # Name the culprit from the stack when we recognise it.
+        if "tray.py" in stack or "Shell_NotifyIcon" in stack:
+            what = "notification-area updates"
+        elif "taskbar_slot" in stack:
+            what = "taskbar position checks"
+        else:
+            what = "calls into the Windows shell"
+        minutes = self._trip_window / 60.0
+        window = ("the last minute" if minutes <= 1
+                  else f"the last {minutes:.0f} minutes")
+        diagnosis = (f"the interface froze {self._trip_after} times in "
+                     f"{window}, blocked in {what}")
+        log.error("Repeated freezes detected — self-healing: %s", diagnosis)
+        if self._on_repeated:
+            try:
+                self._on_repeated(diagnosis)
+            except Exception:
+                log.exception("Self-healing callback failed")
+
+    def rearm(self):
+        """Allow tripping again (after the app has recovered)."""
+        self._tripped = False
+        self._events.clear()

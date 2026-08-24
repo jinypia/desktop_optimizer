@@ -11,6 +11,7 @@ Deliberately cheap: a handful of QLabel updates per sample, no charts.
 from __future__ import annotations
 
 import logging
+import time
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QAction
@@ -21,11 +22,15 @@ from PySide6.QtWidgets import (
 from ..monitor import Snapshot
 from ..util import human_rate
 from . import taskbar_slot, theme
+from .shellguard import guard
 
 log = logging.getLogger(__name__)
 
 GB = 1 << 30
-DOCK_KEEP_MS = 3000     # re-check the taskbar slot this often while docked
+# Re-checking the slot means cross-process calls into explorer, so keep it
+# infrequent: the taskbar only changes when icons appear or it is moved.
+DOCK_KEEP_MS = 10000
+RAISE_MIN_INTERVAL_S = 60.0   # re-assert z-order rarely, never every tick
 
 
 class MiniWindow(QWidget):
@@ -45,6 +50,7 @@ class MiniWindow(QWidget):
         self.customContextMenuRequested.connect(self._show_menu)
         self._drag_offset = None
         self._docked = True
+        self._last_raise = 0.0
         self._dock_timer = QTimer(self)
         self._dock_timer.setInterval(DOCK_KEEP_MS)
         self._dock_timer.setTimerType(Qt.VeryCoarseTimer)
@@ -142,15 +148,27 @@ class MiniWindow(QWidget):
 
     def _keep_docked(self):
         """Follow the taskbar: its size changes as tray icons come and go,
-        and the whole bar can move between screens or edges."""
-        if not self._docked or not self.isVisible():
+        and the whole bar can move between screens or edges.
+
+        Skipped entirely while the shell is slow — a frozen position is far
+        better than a frozen window.
+        """
+        if not self._docked or not self.isVisible() or guard.degraded:
             return
         pos = taskbar_slot.dock_position(self.size(), self.screen())
         if pos is None:
             return                      # taskbar hidden right now; sit tight
         if pos != self.pos():
             self.move(pos)
-        self.raise_()                   # stay above the taskbar
+        self._raise_if_due()
+
+    def _raise_if_due(self):
+        """Re-assert z-order occasionally. Doing this on every tick fought
+        with the shell for stacking order and cost a shell round-trip."""
+        now = time.monotonic()
+        if now - self._last_raise >= RAISE_MIN_INTERVAL_S:
+            self._last_raise = now
+            self.raise_()
 
     def park_bottom_right(self):
         """Fallback position: floating just above the taskbar, right side."""

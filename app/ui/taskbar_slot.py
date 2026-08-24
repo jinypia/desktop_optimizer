@@ -22,6 +22,8 @@ from ctypes import wintypes
 
 from PySide6.QtCore import QPoint, QRect, QSize
 
+from .shellguard import guard
+
 GAP_PX = 8              # logical px between the strip and the tray cluster
 MIN_TASKBAR_PX = 24     # ignore an auto-hidden / collapsed taskbar
 
@@ -29,28 +31,54 @@ _u = ctypes.windll.user32
 _u.FindWindowW.restype = wintypes.HWND
 _u.FindWindowExW.restype = wintypes.HWND
 _u.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+_u.IsWindow.argtypes = (wintypes.HWND,)
+
+# These belong to explorer.exe, so every lookup is a cross-process call.
+# Cache the handles and only re-find them when they stop being valid.
+_cached = {"bar": None, "cluster": None}
 
 
 def _rect(hwnd) -> QRect | None:
     if not hwnd:
         return None
     r = wintypes.RECT()
-    if not _u.GetWindowRect(hwnd, ctypes.byref(r)):
+    if not guard.call("GetWindowRect", _u.GetWindowRect, hwnd, ctypes.byref(r)):
         return None
     return QRect(r.left, r.top, r.right - r.left, r.bottom - r.top)
 
 
+def _taskbar_hwnd():
+    hwnd = _cached["bar"]
+    if hwnd and _u.IsWindow(hwnd):
+        return hwnd
+    hwnd = guard.call("FindWindow Shell_TrayWnd",
+                      _u.FindWindowW, "Shell_TrayWnd", None)
+    _cached["bar"] = hwnd
+    _cached["cluster"] = None       # child handles belong to this parent
+    return hwnd
+
+
+def _cluster_hwnd():
+    hwnd = _cached["cluster"]
+    if hwnd and _u.IsWindow(hwnd):
+        return hwnd
+    bar = _taskbar_hwnd()
+    if not bar:
+        return None
+    hwnd = guard.call("FindWindowEx TrayNotifyWnd", _u.FindWindowExW,
+                      bar, None, "TrayNotifyWnd", None)
+    _cached["cluster"] = hwnd
+    return hwnd
+
+
 def taskbar_rect() -> QRect | None:
     """Physical-pixel rect of the primary taskbar."""
-    return _rect(_u.FindWindowW("Shell_TrayWnd", None))
+    return _rect(_taskbar_hwnd())
 
 
 def tray_cluster_rect() -> QRect | None:
     """Physical-pixel rect of the notification area (icons + clock)."""
-    tray = _u.FindWindowW("Shell_TrayWnd", None)
-    if not tray:
-        return None
-    return _rect(_u.FindWindowExW(tray, None, "TrayNotifyWnd", None))
+    return _rect(_cluster_hwnd())
 
 
 def dock_position(size: QSize, screen) -> QPoint | None:

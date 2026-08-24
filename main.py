@@ -137,7 +137,13 @@ def main() -> int:
         window.show()
     else:
         window.start_in_mini_mode()
-    diag.FreezeWatch(window.last_gui_beat).start()
+    # The watchdog does not just report freezes — it tells the window to
+    # shed whatever is blocking it (see MainWindow.on_repeated_freeze).
+    freeze_watch = diag.FreezeWatch(
+        window.last_gui_beat,
+        on_repeated_freeze=window.on_repeated_freeze)
+    window.set_freeze_watch(freeze_watch)
+    freeze_watch.start()
     return app.exec()
 
 
