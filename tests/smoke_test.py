@@ -148,36 +148,99 @@ def main() -> int:
         "chart history lost while hidden"
     print(f"restore OK — {buffered} samples of history preserved")
 
-    # -- background throttling --
+    # -- three-tier throttling --
     from app import config
     from app.monitor import MetricsSampler
     sampler = MetricsSampler()
     assert sampler.interval() == config.SAMPLE_INTERVAL_S
-    sampler.set_foreground(False)
-    assert sampler.interval() == config.SAMPLE_INTERVAL_BG_S, \
-        "sampler did not stretch its interval in the background"
-    assert config.PROC_SCAN_EVERY_BG > config.PROC_SCAN_EVERY, \
-        "background process scan must be rarer than foreground"
+    sampler.set_mode("mini")
+    assert sampler.interval() == config.SAMPLE_INTERVAL_MINI_S
+    sampler.set_mode("hidden")
+    assert sampler.interval() == config.SAMPLE_INTERVAL_BG_S
+    assert (config.SAMPLE_INTERVAL_S < config.SAMPLE_INTERVAL_MINI_S
+            < config.SAMPLE_INTERVAL_BG_S), "cadence tiers out of order"
+    assert config.PROC_SCAN_EVERY_BG > config.PROC_SCAN_EVERY
 
-    flags = []
-    win.foreground_changed.connect(flags.append)
+    modes = []
+    win.view_mode_changed.connect(modes.append)
     win.enter_mini_mode()
     app.processEvents()
-    assert flags and flags[-1] is False, "hiding did not signal background"
-    assert not win._foreground
+    assert modes and modes[-1] == "mini", f"expected mini, got {modes}"
     assert win._lag_timer.interval() == win.RESP_TIMER_BG_MS, \
-        "responsiveness probe not slowed while hidden"
-    bg_stall = win._stall_after_s()
+        "responsiveness probe not slowed outside the dashboard"
+    mini_stall = win._stall_after_s()
+    win.hide_to_tray()
+    app.processEvents()
+    assert modes[-1] == "hidden", f"expected hidden, got {modes}"
+    hidden_stall = win._stall_after_s()
+    assert hidden_stall > mini_stall, "stall threshold must follow cadence"
     win.exit_mini_mode()
     app.processEvents()
-    assert flags[-1] is True, "restoring did not signal foreground"
+    assert modes[-1] == "dashboard", f"expected dashboard, got {modes}"
     assert win._lag_timer.interval() == win.RESP_TIMER_MS
-    assert bg_stall > win._stall_after_s(), \
-        "stall threshold must scale with the slower background cadence"
-    print(f"throttling OK — probe {win.RESP_TIMER_MS}/"
-          f"{win.RESP_TIMER_BG_MS} ms, sample "
-          f"{config.SAMPLE_INTERVAL_S}/{config.SAMPLE_INTERVAL_BG_S} s, "
-          f"stall {win._stall_after_s():.0f}/{bg_stall:.0f} s")
+    print(f"throttling OK — sample {config.SAMPLE_INTERVAL_S}/"
+          f"{config.SAMPLE_INTERVAL_MINI_S}/{config.SAMPLE_INTERVAL_BG_S} s, "
+          f"stall {win._stall_after_s():.0f}/{mini_stall:.0f}/"
+          f"{hidden_stall:.0f} s")
+
+    # -- taskbar docking geometry --
+    # The offscreen platform reports a virtual screen unrelated to the real
+    # desktop, so the placement maths is checked against a stub screen that
+    # matches the actual taskbar the Win32 calls just reported.
+    from PySide6.QtCore import QRect
+    from app.ui import taskbar_slot
+
+    bar = taskbar_slot.taskbar_rect()
+    cluster = taskbar_slot.tray_cluster_rect()
+    print(f"taskbar {bar}, tray cluster {cluster}")
+    assert bar is not None, "no taskbar found (Shell_TrayWnd missing?)"
+
+    class StubScreen:
+        """Stands in for the screen the taskbar actually lives on."""
+
+        def __init__(self, rect, dpr=1.0):
+            self._rect, self._dpr = rect, dpr
+
+        def devicePixelRatio(self):
+            return self._dpr
+
+        def geometry(self):
+            return self._rect
+
+    # the real taskbar, at whatever scaling this desktop uses
+    for dpr in (1.0, 1.5, 2.0):
+        # a real taskbar scales with the ratio; keep it 48 logical px tall
+        phys = QRect(0, int(2160 - 48 * dpr), int(3840), int(48 * dpr))
+        taskbar_slot.taskbar_rect = lambda r=phys: r
+        taskbar_slot.tray_cluster_rect = lambda r=phys: QRect(
+            int(r.right() - 234 * dpr / 1.0), r.top(), int(234), r.height())
+        screen = StubScreen(QRect(0, 0, int(3840 / dpr), int(2160 / dpr)), dpr)
+        pos = taskbar_slot.dock_position(mini.size(), screen)
+        assert pos is not None, f"no dock slot at dpr {dpr}"
+        top, bottom = phys.top() / dpr, phys.bottom() / dpr
+        assert top - 1 <= pos.y() and pos.y() + mini.height() <= bottom + 1, \
+            f"dpr {dpr}: strip not inside the taskbar band ({pos.y()})"
+        cl = taskbar_slot.tray_cluster_rect().left() / dpr
+        assert pos.x() + mini.width() <= cl, \
+            f"dpr {dpr}: strip overlaps the tray cluster ({pos.x()} vs {cl})"
+        print(f"dock slot OK at dpr {dpr} — {pos.x()},{pos.y()}")
+
+    # fallbacks: must decline rather than misplace the strip
+    taskbar_slot.tray_cluster_rect = lambda: None
+    cases = {
+        "vertical taskbar": QRect(0, 0, 62, 1440),
+        "auto-hidden": QRect(0, 2158, 3840, 48),
+        "too short for the strip": QRect(0, 2140, 3840, 20),
+    }
+    for label, rect in cases.items():
+        taskbar_slot.taskbar_rect = lambda r=rect: r
+        screen = StubScreen(QRect(0, 0, 3840, 2160), 1.0)
+        assert taskbar_slot.dock_position(mini.size(), screen) is None, \
+            f"should have declined to dock: {label}"
+        print(f"declines to dock: {label}")
+
+    print(f"docking OK — strip {mini.width()}x{mini.height()} "
+          f"fits a {bar.height()}px taskbar")
 
     # -- taskbar (notification area) load icon --
     from app.ui.tray import load_icon

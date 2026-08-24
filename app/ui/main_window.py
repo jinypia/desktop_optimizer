@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from .. import config, optimizer
 from ..analyzer import Alert, Analyzer
-from ..monitor import Snapshot
+from ..monitor import MetricsSampler, Snapshot
 from ..util import human_bytes, human_rate
 from . import theme
 from .details_tab import DetailsTab
@@ -42,7 +42,8 @@ class MainWindow(QMainWindow):
     WATCHDOG_MS = 5000          # self-health check period
 
     sampler_stalled = Signal()      # main() restarts the sampler on this
-    foreground_changed = Signal(bool)   # drives the sampler's cadence
+    view_mode_changed = Signal(str)  # "dashboard" | "mini" | "hidden"
+    quit_requested = Signal()       # from the mini strip's context menu
 
     def __init__(self):
         super().__init__()
@@ -68,7 +69,7 @@ class MainWindow(QMainWindow):
         self._settings = QSettings("jinypia", "DesktopOptimizer")
         self._mini = None
         self._charts_stale = False
-        self._foreground = True
+        self._view_mode = "dashboard"
 
         pg.setConfigOptions(antialias=True, background=theme.SURFACE,
                             foreground=theme.MUTED)
@@ -86,10 +87,19 @@ class MainWindow(QMainWindow):
 
     def request_quit(self):
         self._quitting = True
+        # Come back next launch in whichever surface was last in use.
+        self._settings.setValue(
+            "start/mode", "dashboard" if self._view_mode == "dashboard"
+            else "mini")
         if self._mini is not None:
-            if self._mini.isVisible():
+            if self._mini.isVisible() and not self._mini.is_docked():
                 self._settings.setValue("mini/pos", self._mini.position())
             self._mini.close()
+
+    def start_mode(self) -> str:
+        """Surface to open on launch — mini by default."""
+        mode = self._settings.value("start/mode", "mini")
+        return mode if mode in ("dashboard", "mini") else "mini"
 
     def last_gui_beat(self) -> float:
         """Monotonic time of the GUI thread's last heartbeat (FreezeWatch)."""
@@ -273,49 +283,59 @@ class MainWindow(QMainWindow):
         # EMA smooths one-off spikes (window drags, etc.)
         self._ui_lag_ms = 0.7 * self._ui_lag_ms + 0.3 * lag
 
-    # -- foreground / background throttling ------------------------------------
-    def _set_foreground(self, foreground: bool):
-        """Throttle everything we own when nobody is looking at the window.
+    # -- view mode & throttling ------------------------------------------------
+    def _dashboard_on_screen(self) -> bool:
+        return self.isVisible() and not self.isMinimized()
 
-        Background mode: slower sampling and probing, below-normal process
-        priority so we never compete with foreground apps, and the working
-        set released back to Windows.
+    def _sync_view_mode(self):
+        """Derive the mode from what is actually on screen, and throttle.
+
+        dashboard -> full cadence. mini -> slower, but still lively enough
+        for a live strip. hidden -> slowest. Anything but the dashboard also
+        drops to below-normal priority and hands the working set back.
         """
-        if foreground == self._foreground:
+        if self._dashboard_on_screen():
+            mode = "dashboard"
+        elif self._mini is not None and self._mini.isVisible():
+            mode = "mini"
+        else:
+            mode = "hidden"
+        if mode == self._view_mode or not hasattr(self, "_lag_timer"):
             return
-        if not hasattr(self, "_lag_timer"):
-            return          # state change during construction; nothing to do
-        self._foreground = foreground
-        self.foreground_changed.emit(foreground)
+        previous, self._view_mode = self._view_mode, mode
+        self.view_mode_changed.emit(mode)
 
-        # fewer timer wakeups while hidden (also easier on battery)
-        self._lag_timer.setInterval(self.RESP_TIMER_MS if foreground
+        showing = mode == "dashboard"
+        # fewer timer wakeups when the dashboard is away (easier on battery)
+        self._lag_timer.setInterval(self.RESP_TIMER_MS if showing
                                     else self.RESP_TIMER_BG_MS)
-        self._lag_timer.setTimerType(Qt.PreciseTimer if foreground
+        self._lag_timer.setTimerType(Qt.PreciseTimer if showing
                                      else Qt.CoarseTimer)
         self._last_tick = time.monotonic()
+        optimizer.set_own_priority(background=not showing)
 
-        optimizer.set_own_priority(background=not foreground)
-        if foreground:
-            log.info("Foreground: full cadence restored")
-        else:
+        if showing:
+            log.info("View: dashboard — full cadence restored")
+        elif previous == "dashboard":
             freed = optimizer.trim_self_working_set()
-            log.info("Background: throttled cadence, below-normal priority, "
-                     "released %s", human_bytes(freed))
+            log.info("View: %s — throttled cadence, below-normal priority, "
+                     "released %s", mode, human_bytes(freed))
+        else:
+            log.info("View: %s", mode)
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._set_foreground(True)
+        self._sync_view_mode()
 
     def hideEvent(self, event):
         super().hideEvent(event)
-        self._set_foreground(False)
+        self._sync_view_mode()
 
     def changeEvent(self, event):
         super().changeEvent(event)
         # a minimised window is still "visible" to Qt but unreadable to a human
         if event.type() == event.Type.WindowStateChange:
-            self._set_foreground(not self.isMinimized() and self.isVisible())
+            self._sync_view_mode()
 
     # -- self-health watchdog -------------------------------------------------
     def _start_watchdog(self):
@@ -326,10 +346,8 @@ class MainWindow(QMainWindow):
 
     def _stall_after_s(self) -> float:
         """Stall threshold, derived from the cadence actually in use — the
-        background cadence is slower, and must not read as a stall."""
-        interval = (config.SAMPLE_INTERVAL_S if self._foreground
-                    else config.SAMPLE_INTERVAL_BG_S)
-        return interval * 4 + 5
+        throttled cadences are slower, and must not read as a stall."""
+        return MetricsSampler.MODES[self._view_mode][0] * 4 + 5
 
     def _check_heartbeat(self):
         """Detect a dead/stuck sampler by its missing heartbeat."""
@@ -361,26 +379,48 @@ class MainWindow(QMainWindow):
             self._tabs.currentWidget() is self._processes)
 
     # -- mini mode ---------------------------------------------------------------
-    def enter_mini_mode(self):
-        """Shrink to the compact strip; the dashboard hides entirely."""
+    def _ensure_mini(self) -> MiniWindow:
         if self._mini is None:
             self._mini = MiniWindow()
             self._mini.restore_requested.connect(self.exit_mini_mode)
+            self._mini.hide_requested.connect(self.hide_to_tray)
+            self._mini.quit_requested.connect(self.quit_requested)
+            self._mini.docked_changed.connect(self._on_mini_docked_changed)
+            # Docked into the taskbar by default; a remembered free position
+            # is only used if the user dragged it out of the dock before.
+            docked = self._settings.value("mini/docked", True, type=bool)
             pos = self._settings.value("mini/pos")
-            if pos is not None:
+            if docked:
+                self._mini.set_docked(True, announce=False)
+            elif pos is not None:
+                self._mini.set_docked(False, announce=False)
                 self._mini.move(pos)
                 self._mini.clamp_to_screen()
             else:
+                self._mini.set_docked(False, announce=False)
                 self._mini.park_bottom_right()
+        return self._mini
+
+    def _on_mini_docked_changed(self, docked: bool):
+        self._settings.setValue("mini/docked", docked)
+        if not docked and self._mini is not None:
+            self._settings.setValue("mini/pos", self._mini.position())
+        log.info("Mini strip %s", "docked to taskbar" if docked
+                 else "undocked (floating)")
+
+    def enter_mini_mode(self):
+        """Shrink to the compact strip; the dashboard hides entirely."""
+        mini = self._ensure_mini()
         self._processes.set_active(False)      # stop scanning while hidden
         self.hide()
-        self._mini.show()
-        self._mini.raise_()
-        log.info("Mini mode on")
+        mini.show()
+        mini.raise_()
+        self._sync_view_mode()
 
     def exit_mini_mode(self):
         if self._mini is not None and self._mini.isVisible():
-            self._settings.setValue("mini/pos", self._mini.position())
+            if not self._mini.is_docked():
+                self._settings.setValue("mini/pos", self._mini.position())
             self._mini.hide()
         if self._charts_stale:
             self._redraw_charts()
@@ -388,7 +428,27 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         self._on_tab_changed(self._tabs.currentIndex())
-        log.info("Mini mode off")
+        self._sync_view_mode()
+
+    def hide_to_tray(self):
+        """Hide everything; only the tray icon remains."""
+        if self._mini is not None:
+            self._mini.hide()
+        self.hide()
+        self._sync_view_mode()
+        if self._tray and not self._hide_hint_shown:
+            self._hide_hint_shown = True
+            self._tray.notify(
+                "Still monitoring",
+                "Desktop Optimizer keeps running in the notification area. "
+                "Right-click its icon for the dashboard, mini mode or exit.")
+
+    def start_in_mini_mode(self):
+        """Startup path: bring up the strip instead of the dashboard."""
+        mini = self._ensure_mini()
+        mini.show()
+        mini.raise_()
+        self._sync_view_mode()
 
     def in_mini_mode(self) -> bool:
         return self._mini is not None and self._mini.isVisible()
@@ -428,7 +488,7 @@ class MainWindow(QMainWindow):
         lag = self._ui_lag_ms
         # Cards, charts and the vitals strip cost nothing to skip while the
         # dashboard is hidden or minimised (mini mode, tray, taskbar).
-        visible = self._foreground
+        visible = self._view_mode == "dashboard"
 
         gb = 1 << 30
         if visible:
@@ -641,11 +701,13 @@ class MainWindow(QMainWindow):
         if self._quitting or self._tray is None or not self._tray.isVisible():
             event.accept()
             return
+        # Closing the dashboard falls back to the mini strip — that is the
+        # app's default surface, not a hidden background process.
         event.ignore()
-        self.hide()
+        self.enter_mini_mode()
         if not self._hide_hint_shown:
             self._hide_hint_shown = True
             self._tray.notify(
                 "Still monitoring",
-                "Desktop Optimizer keeps running in the tray. "
-                "Right-click the tray icon to exit.")
+                "Desktop Optimizer is in mini mode. Double-click the strip "
+                "for the dashboard; right-click it for more options.")

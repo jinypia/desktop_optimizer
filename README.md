@@ -73,9 +73,10 @@ Either:
 - **Double-click `run.bat`** — starts the app with no console window, or
 - run from PowerShell: `.venv\Scripts\python main.py`
 
-The dashboard window opens and a tray icon appears. **Closing the window
-does not exit the app** — it keeps monitoring from the tray. To exit
-completely, right-click the tray icon and choose **Exit**.
+The app starts as a **compact strip docked in the taskbar** (mini mode) plus
+a tray icon. Double-click the strip for the full dashboard; **closing the
+dashboard returns to the strip** rather than exiting. To exit completely,
+right-click the strip or the tray icon and choose **Exit**.
 
 ## Using the program
 
@@ -109,17 +110,17 @@ The sampler thread runs at low OS priority; volume usage and CPU
 frequency are polled every 10th cycle; the Details and Processes tabs
 refresh only while their tab is open.
 
-**While you're not** (mini mode, tray, or just minimised) it throttles
-itself hard:
+**While you're not**, it throttles itself in three tiers — the mini strip
+stays lively, a fully hidden app costs almost nothing:
 
-| | Dashboard open | Hidden / minimised |
-|---|---|---|
-| Sample interval | 1.5 s | 4 s |
-| All-process scan | every 2nd sample | every 8th sample |
-| Responsiveness probe | 250 ms (precise) | 1 s (coarse) |
-| Process priority | normal | below normal |
-| Charts, cards, vitals strip | drawn | skipped (history still buffered) |
-| Working set | resident | released back to Windows on hide |
+| | Dashboard | Mini strip | Hidden (tray) |
+|---|---|---|---|
+| Sample interval | 1.5 s | 2.5 s | 4 s |
+| All-process scan | every 2nd sample | every 8th | every 8th |
+| Responsiveness probe | 250 ms (precise) | 1 s (coarse) | 1 s (coarse) |
+| Process priority | normal | below normal | below normal |
+| Charts, cards, vitals strip | drawn | skipped (history buffered) | skipped |
+| Working set | resident | released on leaving the dashboard | released |
 
 Alerts, logging and the stall watchdog keep working throughout — only the
 cost of *displaying* things is dropped. The stall threshold scales with
@@ -193,26 +194,39 @@ log at the bottom. **Run all safe cleanups** chains the starred ones.
 | **Restart Explorer** | Restarts the Windows shell (fixes a frozen taskbar). Asks for confirmation. |
 | **Restart as administrator…** | Relaunches the app elevated (UAC prompt) to enable admin-only actions and control of elevated processes. |
 
-### Mini mode — compact status above the taskbar
+### Mini mode — the default view, docked in the taskbar
 
-Press **Ctrl+M**, click **▭ Mini mode** (top-right of the tab bar), or pick
-*Mini mode* from the tray menu. The dashboard collapses to a single strip
-about 490×34 px showing status, CPU, memory, disk, network and
-responsiveness:
+**The app starts in mini mode.** It opens as a compact strip (~490×34 px)
+docked into the taskbar, immediately left of the tray icons and the clock,
+showing status, CPU, memory, disk, network and responsiveness:
 
 ```
-● CPU 71%  MEM 62%  DSK 18%  NET 439.5 KB/s  RESP 495 ms   ▣
+● CPU 26%  MEM 62%  DSK 0%  NET 10.3 KB/s  RESP 0 ms   ▣
 ```
 
-- Always on top, so it stays visible over other windows.
-- **Drag it anywhere** — park it above the taskbar. The position is
-  remembered between sessions.
-- **Double-click** it, press Ctrl+M again, click **▣**, or use the tray's
-  *Open dashboard* to return to the full view.
-- Monitoring never pauses, and chart history keeps accumulating while
-  hidden, so the graphs are unbroken when you come back — but the charts
-  are not *redrawn* while nobody can see them, so mini mode is cheaper
-  than the full dashboard.
+- **Double-click** the strip (or press Ctrl+M, or click **▣**, or use the
+  tray's *Open dashboard*) for the full dashboard. Closing the dashboard
+  returns to the strip.
+- **Right-click** it for: Open dashboard, Dock to taskbar (toggle), Hide to
+  tray, Exit.
+- **Drag it** anywhere to undock; it then floats always-on-top and its
+  position is remembered. Re-dock from the right-click menu.
+- It follows the taskbar: as tray icons come and go, or the bar moves
+  between screens, the strip re-seats itself every few seconds.
+- The app reopens in whichever view you used last, so if you prefer the
+  dashboard, that preference sticks.
+
+> **Why not *between* the icons and the clock?** On Windows 11 the tray
+> icons and the date are drawn as a single block (`TrayNotifyWnd`) by the
+> shell — the old per-element windows are gone, and Windows removed
+> deskbands, so nothing can be inserted between them. The gap there is
+> ~30 px wide. Immediately left of that block, inside the taskbar band, is
+> the closest slot the OS allows; if the taskbar is vertical, auto-hidden,
+> or too short, the strip floats just above it instead.
+
+Monitoring never pauses in mini mode, and chart history keeps accumulating,
+so the graphs are unbroken when you come back — the charts simply aren't
+*redrawn* while nobody can see them.
 
 ### Taskbar icon (notification area)
 
@@ -297,6 +311,8 @@ app/
     theme.py            dark theme tokens (accessibility-validated palette)
     widgets.py          metric cards + live charts with hover readout
     main_window.py      window shell: tabs + health side panel
+    mini_window.py      compact taskbar-docked status strip
+    taskbar_slot.py     finds the docking slot in the Windows taskbar
     details_tab.py      professional detail view
     process_tab.py      full process list + controls
     optimize_tab.py     one-click action catalog + log

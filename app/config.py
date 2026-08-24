@@ -1,8 +1,9 @@
 """Central configuration: sampling cadence, alert thresholds, hysteresis."""
 from dataclasses import dataclass
 
-SAMPLE_INTERVAL_S = 1.5      # metrics sampling period while on screen
-SAMPLE_INTERVAL_BG_S = 4.0   # ... and while hidden (mini mode / tray)
+SAMPLE_INTERVAL_S = 1.5      # dashboard on screen
+SAMPLE_INTERVAL_MINI_S = 2.5  # mini strip only — still wants to look live
+SAMPLE_INTERVAL_BG_S = 4.0   # nothing on screen (tray only / minimised)
 HISTORY_SAMPLES = 240        # chart history (~6 minutes at 1.5 s)
 TOP_PROCESS_COUNT = 6        # rows in the top-process table
 

@@ -1,26 +1,38 @@
 """Mini mode: a compact always-on-top status strip.
 
-A small frameless window that shows the essentials — CPU, memory, disk,
-network and responsiveness — in one line, meant to be parked above the
-taskbar. Drag it anywhere; double-click (or the restore button) brings the
-full dashboard back. Its position is remembered.
+A small frameless window showing the essentials — CPU, memory, disk,
+network and responsiveness — in one line. By default it docks into the
+taskbar band, just left of the tray icons and clock (see taskbar_slot).
+Drag it anywhere to undock; double-click or the restore button brings the
+full dashboard back. Position and docked state are remembered.
 
 Deliberately cheap: a handful of QLabel updates per sample, no charts.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
+import logging
+
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import (
+    QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QWidget,
+)
 
 from ..monitor import Snapshot
 from ..util import human_rate
-from . import theme
+from . import taskbar_slot, theme
+
+log = logging.getLogger(__name__)
 
 GB = 1 << 30
+DOCK_KEEP_MS = 3000     # re-check the taskbar slot this often while docked
 
 
 class MiniWindow(QWidget):
     restore_requested = Signal()
+    hide_requested = Signal()
+    quit_requested = Signal()
+    docked_changed = Signal(bool)
 
     def __init__(self, parent=None):
         # Qt.Tool keeps it off the alt-tab list; it is a companion window,
@@ -29,7 +41,14 @@ class MiniWindow(QWidget):
                          | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowTitle("Desktop Optimizer — mini")
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_menu)
         self._drag_offset = None
+        self._docked = True
+        self._dock_timer = QTimer(self)
+        self._dock_timer.setInterval(DOCK_KEEP_MS)
+        self._dock_timer.setTimerType(Qt.VeryCoarseTimer)
+        self._dock_timer.timeout.connect(self._keep_docked)
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -92,14 +111,78 @@ class MiniWindow(QWidget):
         self._metrics["resp"].setText(f"{ui_lag_ms:.0f} ms")
 
     # -- placement ------------------------------------------------------------
+    def is_docked(self) -> bool:
+        return self._docked
+
+    def set_docked(self, docked: bool, announce: bool = True):
+        """Docked = pinned into the taskbar band beside the tray cluster."""
+        if docked:
+            if not self.dock_to_taskbar():
+                return
+        else:
+            self._docked = False
+            self._dock_timer.stop()
+        if announce:
+            self.docked_changed.emit(self._docked)
+
+    def dock_to_taskbar(self) -> bool:
+        """Move into the taskbar slot. False if the OS offers no room."""
+        pos = taskbar_slot.dock_position(self.size(), self.screen())
+        if pos is None:
+            log.info("No taskbar slot available — staying floating")
+            self._docked = False
+            self._dock_timer.stop()
+            return False
+        self.move(pos)
+        if not self._docked:
+            self._docked = True
+        if self.isVisible():
+            self._dock_timer.start()
+        return True
+
+    def _keep_docked(self):
+        """Follow the taskbar: its size changes as tray icons come and go,
+        and the whole bar can move between screens or edges."""
+        if not self._docked or not self.isVisible():
+            return
+        pos = taskbar_slot.dock_position(self.size(), self.screen())
+        if pos is None:
+            return                      # taskbar hidden right now; sit tight
+        if pos != self.pos():
+            self.move(pos)
+        self.raise_()                   # stay above the taskbar
+
     def park_bottom_right(self):
-        """Default position: above the taskbar, near the notification area."""
+        """Fallback position: floating just above the taskbar, right side."""
         screen = self.screen()
         if screen is None:
             return
         area = screen.availableGeometry()
         self.move(area.right() - self.width() - 12,
                   area.bottom() - self.height() - 12)
+
+    # -- context menu ---------------------------------------------------------
+    def _show_menu(self, pos):
+        menu = QMenu(self)
+        act_open = QAction("Open dashboard", menu)
+        act_open.triggered.connect(self.restore_requested)
+        menu.addAction(act_open)
+
+        act_dock = QAction("Dock to taskbar", menu)
+        act_dock.setCheckable(True)
+        act_dock.setChecked(self._docked)
+        act_dock.triggered.connect(
+            lambda checked: self.set_docked(checked))
+        menu.addAction(act_dock)
+
+        menu.addSeparator()
+        act_hide = QAction("Hide to tray", menu)
+        act_hide.triggered.connect(self.hide_requested)
+        menu.addAction(act_hide)
+        act_quit = QAction("Exit", menu)
+        act_quit.triggered.connect(self.quit_requested)
+        menu.addAction(act_quit)
+        menu.exec(self.mapToGlobal(pos))
 
     def clamp_to_screen(self):
         """Keep the window reachable if the display layout changed."""
@@ -125,7 +208,21 @@ class MiniWindow(QWidget):
     def mouseMoveEvent(self, event):
         if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_offset)
+            if self._docked:            # dragging it away undocks it
+                self._docked = False
+                self._dock_timer.stop()
+                self.docked_changed.emit(False)
             event.accept()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._docked:
+            self.dock_to_taskbar()
+            self._dock_timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._dock_timer.stop()
 
     def mouseReleaseEvent(self, event):
         self._drag_offset = None

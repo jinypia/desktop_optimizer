@@ -78,32 +78,39 @@ class Snapshot:
 class MetricsSampler(QThread):
     sample = Signal(object)  # Snapshot
 
+    # what is on screen -> (sample interval, all-process scan every Nth)
+    MODES = {
+        "dashboard": (config.SAMPLE_INTERVAL_S, config.PROC_SCAN_EVERY),
+        "mini": (config.SAMPLE_INTERVAL_MINI_S, config.PROC_SCAN_EVERY_BG),
+        "hidden": (config.SAMPLE_INTERVAL_BG_S, config.PROC_SCAN_EVERY_BG),
+    }
+
     def __init__(self, interval_s: float = config.SAMPLE_INTERVAL_S, parent=None):
         super().__init__(parent)
         self._interval = interval_s
-        self._foreground = True
+        self._mode = "dashboard"
         self._stop = False
 
     def stop(self):
         self._stop = True
 
-    def set_foreground(self, foreground: bool):
-        """Foreground = the dashboard is on screen and someone can read it.
+    def set_mode(self, mode: str):
+        """Match the cadence to what the user can actually see.
 
-        Background stretches the cadence and thins out the expensive
-        all-process scan. Plain attribute writes: the sampler loop reads
-        them at the top of each cycle, so no locking is needed.
+        Plain attribute writes: the sampler loop reads them at the top of
+        each cycle, so no locking is needed.
         """
-        if foreground == self._foreground:
+        if mode not in self.MODES or mode == self._mode:
             return
-        self._foreground = foreground
-        log.info("Sampler cadence: %s (%.1fs interval)",
-                 "foreground" if foreground else "background",
-                 self.interval())
+        self._mode = mode
+        log.info("Sampler cadence: %s (%.1fs interval, process scan every %d)",
+                 mode, *self.MODES[mode])
 
     def interval(self) -> float:
-        return (config.SAMPLE_INTERVAL_S if self._foreground
-                else config.SAMPLE_INTERVAL_BG_S)
+        return self.MODES[self._mode][0]
+
+    def _proc_scan_every(self) -> int:
+        return self.MODES[self._mode][1]
 
     def run(self):
         log.info("Metrics sampler started (interval %.1fs, low priority)",
@@ -195,8 +202,7 @@ class MetricsSampler(QThread):
 
         if self._cycle % config.VOLUME_SCAN_EVERY == 1 or not self._volumes:
             self._volumes = self._scan_volumes()
-        scan_every = (config.PROC_SCAN_EVERY if self._foreground
-                      else config.PROC_SCAN_EVERY_BG)
+        scan_every = self._proc_scan_every()
         if self._cycle % scan_every == 1 or not self._top_cpu:
             self._scan_processes()
 

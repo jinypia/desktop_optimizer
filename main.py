@@ -88,20 +88,20 @@ def main() -> int:
 
     # Sampler lifecycle: started here, restarted when the watchdog reports
     # a stall (dead/stuck sampler thread).
-    state = {"sampler": None, "foreground": True}
+    state = {"sampler": None, "view_mode": "dashboard"}
 
     def start_sampler():
         sampler = MetricsSampler()
         sampler.sample.connect(window.on_sample)
-        sampler.set_foreground(state["foreground"])   # survive restarts
+        sampler.set_mode(state["view_mode"])         # survive restarts
         sampler.start()
         state["sampler"] = sampler
 
-    def on_foreground_changed(foreground: bool):
-        state["foreground"] = foreground
+    def on_view_mode_changed(mode: str):
+        state["view_mode"] = mode
         sampler = state["sampler"]
         if sampler is not None:
-            sampler.set_foreground(foreground)
+            sampler.set_mode(mode)
 
     def restart_sampler():
         old = state["sampler"]
@@ -113,7 +113,7 @@ def main() -> int:
         start_sampler()
 
     window.sampler_stalled.connect(restart_sampler)
-    window.foreground_changed.connect(on_foreground_changed)
+    window.view_mode_changed.connect(on_view_mode_changed)
 
     def shutdown():
         sampler = state["sampler"]
@@ -127,10 +127,16 @@ def main() -> int:
         app.quit()
 
     tray.quit_requested.connect(quit_app)
+    window.quit_requested.connect(quit_app)
     app.aboutToQuit.connect(shutdown)
 
     start_sampler()
-    window.show()
+    # Mini mode is the default surface: the app opens as a compact strip in
+    # the taskbar, and the dashboard is one double-click away.
+    if window.start_mode() == "dashboard":
+        window.show()
+    else:
+        window.start_in_mini_mode()
     diag.FreezeWatch(window.last_gui_beat).start()
     return app.exec()
 
