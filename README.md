@@ -9,54 +9,106 @@ every action runs only when you click it.
 
 ---
 
-## Requirements
-
-- Windows 10 or 11
-- Python 3.10+ (3.13 tested) — **prefer the [python.org](https://www.python.org/downloads/)
-  installer over Microsoft Store Python.** The Store version sandboxes file
-  writes (MSIX virtualization), which can make "Clear temp files" silently
-  ineffective and hides the log file. The app detects Store Python and
-  warns at startup, but full functionality needs the python.org build.
-- ~500 MB disk space for the virtual environment (PySide6/Qt)
-
-No administrator rights are needed for normal use. Cleanup actions work on
-your own user's files and processes; system-protected items are skipped
-automatically.
-
 ## Installation
 
-### Option A — installer (recommended)
+### What you need
 
-Download `DesktopOptimizer-1.0.0-setup.exe` from the
-[releases page](https://github.com/jinypia/desktop_optimizer/releases) and
-run it. Notes:
+| | Installer / portable ZIP | Running from source |
+|---|---|---|
+| Windows | 10 or 11, **64-bit** | 10 or 11, 64-bit |
+| Python | **not needed** (bundled) | 3.10+ (3.13 tested) |
+| Disk space | ~140 MB installed | ~500 MB (venv with Qt) |
+| Administrator | **not needed** | not needed |
 
-- **No administrator rights needed.** It installs per-user into
-  `%LOCALAPPDATA%\Programs\Desktop Optimizer`.
-- Creates a Start Menu entry, an optional desktop shortcut, and an
-  optional "start when I sign in" entry (unchecked by default).
-- Uninstall like any other app: Settings → Apps → Desktop Optimizer, or
-  the Start Menu uninstall entry.
-- Python does **not** need to be installed — the interpreter and Qt are
-  bundled.
-- A portable ZIP is also published: unzip anywhere and run
-  `DesktopOptimizer.exe`, no installation at all.
+Cleanup actions work on your own user's files and processes; anything
+system-protected is skipped automatically. A few extras (purge standby
+memory, controlling elevated processes) need administrator rights, and the
+app offers a *Restart as administrator* button for those — everything else
+runs as a standard user.
 
-Windows SmartScreen may warn on first run because the executable is not
-code-signed (signing requires a paid certificate). Choose *More info →
-Run anyway*, or unblock the file via its Properties dialog.
+### Install (recommended)
 
-### Option B — run from source
+1. Go to the
+   [**Releases** page](https://github.com/jinypia/desktop_optimizer/releases/latest).
+2. Download **`DesktopOptimizer-<version>-setup.exe`**.
+3. Run it. There is no UAC prompt — it installs just for you, into
+   `%LOCALAPPDATA%\Programs\Desktop Optimizer`.
+4. On the wizard's *Select Additional Tasks* page you can tick:
+   - **Create a desktop shortcut** (on by default)
+   - **Start Desktop Optimizer when I sign in** (off by default)
+5. Finish. The app starts as a compact strip in your taskbar.
 
-Open PowerShell in the project folder and run:
+> **SmartScreen warning on first run.** The executable is not
+> code-signed (a signing certificate is a paid, per-year expense), so
+> Windows shows *"Windows protected your PC"*. Click **More info → Run
+> anyway**. If you prefer, verify the download first with the SHA-256
+> checksum published in the release notes:
+> ```powershell
+> Get-FileHash .\DesktopOptimizer-1.1.0-setup.exe -Algorithm SHA256
+> ```
+
+### Portable — no installation at all
+
+Download **`DesktopOptimizer-portable.zip`**, unzip it anywhere (a USB
+stick is fine), and run `DesktopOptimizer.exe`. Nothing is written outside
+the folder except the log and settings described below.
+
+### Updating
+
+Download the newer `…-setup.exe` and run it. It upgrades in place — it
+closes the running copy, replaces the files, and keeps your window and
+mini-strip preferences. No need to uninstall first.
+
+### Uninstalling
+
+**Settings → Apps → Installed apps → Desktop Optimizer → Uninstall**, or
+the entry in the Start Menu folder. The uninstaller removes the program,
+its shortcuts, its logs and its saved preferences — nothing is left
+behind.
+
+### Where the app keeps its files
+
+| | Installed build | Running from source |
+|---|---|---|
+| Program | `%LOCALAPPDATA%\Programs\Desktop Optimizer` | your project folder |
+| Log | `%LOCALAPPDATA%\DesktopOptimizer\logs\app.log` | `logs\app.log` in the project |
+| Preferences | `HKCU\Software\jinypia\DesktopOptimizer` | same |
+
+Reach the log at any time from the tray menu → **Open log folder**.
+
+### Unattended / IT deployment
+
+The installer is Inno Setup based, so the usual switches work:
 
 ```powershell
-# 1. Create an isolated environment (do NOT install globally —
-#    Microsoft Store Python breaks on PySide6's long paths)
+# silent per-user install (no UI, no restart)
+.\DesktopOptimizer-1.1.0-setup.exe /VERYSILENT /NORESTART
+
+# silent, and also create the sign-in shortcut
+.\DesktopOptimizer-1.1.0-setup.exe /VERYSILENT /NORESTART /TASKS="startupicon"
+
+# install for all users instead (this one does need administrator)
+.\DesktopOptimizer-1.1.0-setup.exe /VERYSILENT /ALLUSERS
+
+# silent uninstall
+& "$env:LOCALAPPDATA\Programs\Desktop Optimizer\unins000.exe" /VERYSILENT
+```
+
+### Running from source instead
+
+```powershell
+# 1. Isolated environment. Use python.org Python, NOT the Microsoft Store
+#    build: the Store version sandboxes file writes (MSIX virtualization),
+#    which makes "Clear temp files" silently ineffective and hides the log.
+#    The app warns at startup if it detects it.
 python -m venv .venv
 
-# 2. Install dependencies
+# 2. Dependencies
 .venv\Scripts\python -m pip install -r requirements.txt
+
+# 3. Run — either of these
+.\run.bat                          # no console window
+.venv\Scripts\python main.py       # with console output
 ```
 
 **Behind a corporate proxy?** If `pip install` fails with connection-reset
@@ -66,17 +118,14 @@ errors, register the trusted hosts once, then retry step 2:
 pip config set global.trusted-host "pypi.org files.pythonhosted.org"
 ```
 
-## Running the app
+## First run
 
-Either:
+The app opens as a **compact strip docked in the taskbar** (mini mode),
+plus an icon in the notification area showing live CPU load.
 
-- **Double-click `run.bat`** — starts the app with no console window, or
-- run from PowerShell: `.venv\Scripts\python main.py`
-
-The app starts as a **compact strip docked in the taskbar** (mini mode) plus
-a tray icon. Double-click the strip for the full dashboard; **closing the
-dashboard returns to the strip** rather than exiting. To exit completely,
-right-click the strip or the tray icon and choose **Exit**.
+- **Double-click the strip** for the full dashboard.
+- **Closing the dashboard returns to the strip** — it does not exit.
+- To exit completely, right-click the strip or the tray icon → **Exit**.
 
 ## Using the program
 
@@ -252,7 +301,10 @@ and the hysteresis level below which it re-arms:
 Rule("cpu_high", "cpu", warn_at=85, critical_at=96, clear_below=70, sustain_s=20)
 ```
 
-Also in `app/config.py`: sampling cadence (`SAMPLE_INTERVAL_S`) and chart
+Also in `app/config.py`: the three sampling cadences
+(`SAMPLE_INTERVAL_S`, `SAMPLE_INTERVAL_MINI_S`, `SAMPLE_INTERVAL_BG_S`),
+how often the expensive scans run (`PROC_SCAN_EVERY`,
+`PROC_SCAN_EVERY_BG`, `VOLUME_SCAN_EVERY`, `FREQ_SCAN_EVERY`), and chart
 history length (`HISTORY_SAMPLES`). The temp-file age cutoff is
 `TEMP_MIN_AGE_H` in `app/optimizer.py`.
 
@@ -292,7 +344,13 @@ To bump the version, edit `app/version.py`, then the matching values in
 ```
 main.py                 entry point
 run.bat                 launcher (venv + no console window)
+LICENSE                 MIT
+THIRD-PARTY-NOTICES.md  dependency licenses (incl. Qt/LGPL obligations)
+requirements.txt        runtime dependencies
 assets/app.ico          application icon (generated from the tray artwork)
+tests/
+  smoke_test.py         offscreen end-to-end test of the whole UI
+  measure_overhead.py   measures the app's own CPU/RAM from outside
 packaging/
   build.ps1             one-command build: exe + installer + portable zip
   desktop_optimizer.spec  PyInstaller spec (windowed onedir, Qt trimmed)
@@ -325,8 +383,11 @@ app/
 The app monitors its own health too:
 
 - **Log file** — everything (errors, crashes, action results, Qt warnings)
-  is written to `logs\app.log` inside the app folder. Open it via the tray
-  menu → **Open log folder**. Check this first when something looks wrong.
+  is written to a rotating `app.log`: in
+  `%LOCALAPPDATA%\DesktopOptimizer\logs\` for the installed build, or
+  `logs\` in the project folder when running from source. Open it via the
+  tray menu → **Open log folder**. Check this first when something looks
+  wrong.
 - **Stall watchdog** — if metric collection stops (charts frozen), the app
   detects the missing heartbeat within ~15 s, shows *"Monitoring stalled —
   restarting sampler"* in the status line, raises a toast, and restarts

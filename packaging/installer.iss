@@ -82,3 +82,11 @@ Filename: "{app}\{#AppExeName}"; \
 ; Logs and the instance lock are written at runtime, not by the installer.
 Type: filesandordirs; Name: "{localappdata}\DesktopOptimizer\logs"
 Type: dirifempty; Name: "{localappdata}\DesktopOptimizer"
+
+[Registry]
+; Window/mini-strip preferences (QSettings). Removed on uninstall so the
+; app leaves nothing behind.
+Root: HKCU; Subkey: "Software\jinypia\DesktopOptimizer"; \
+    Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\jinypia"; \
+    Flags: uninsdeletekeyifempty
