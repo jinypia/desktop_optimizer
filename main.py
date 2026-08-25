@@ -84,6 +84,7 @@ def main() -> int:
     tray.quick_clean_requested.connect(window.run_quick_clean)
     tray.open_log_requested.connect(lambda: os.startfile(diag.LOG_DIR))
     tray.guide_requested.connect(window.show_guide)
+    tray.check_updates_requested.connect(window.check_for_updates)
     tray.about_requested.connect(window.show_about)
     window.open_log_requested.connect(lambda: os.startfile(diag.LOG_DIR))
     window.set_tray(tray)

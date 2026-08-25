@@ -23,14 +23,31 @@ from PySide6.QtWidgets import (
 from .. import config, optimizer
 from ..analyzer import RULE_TITLES
 from ..monitor import MetricsSampler
+from ..updates import UPGRADE_HINT, install_kind as _install_kind
 from ..version import APP_NAME, PUBLISHER, __version__
 from . import theme
+
+_INSTALL_WORDING = {
+    "installed": "installed with the setup program",
+    "portable": "as a portable copy",
+    "source": "from source",
+}
+
+
+def _hint_html() -> str:
+    """UPGRADE_HINT is plain text (it has shell commands on their own
+    lines); both places that show it render rich text, which would
+    otherwise collapse it to one run-on line."""
+    hint = UPGRADE_HINT.get(_install_kind(), "")
+    return (hint.replace("\n", "<br>")
+                .replace("    ", "&nbsp;" * 4))
 
 
 class GuideTab(QWidget):
     """Scrollable manual. Content is rendered lazily on first show."""
 
     open_log_requested = Signal()
+    check_updates_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -45,9 +62,15 @@ class GuideTab(QWidget):
         btn_log = QPushButton("Open log folder")
         btn_log.setToolTip("Where the app records its own errors and actions")
         btn_log.clicked.connect(self.open_log_requested)
+        self.btn_updates = QPushButton("Check for updates")
+        self.btn_updates.setToolTip(
+            "Ask GitHub once whether a newer release exists. Nothing is "
+            "downloaded or installed, and no check ever runs on its own.")
+        self.btn_updates.clicked.connect(self.check_updates_requested)
         btn_about = QPushButton("About")
         btn_about.clicked.connect(lambda: show_about(self))
         bar.addWidget(btn_log)
+        bar.addWidget(self.btn_updates)
         bar.addWidget(btn_about)
         bar.addStretch(1)
         lay.addLayout(bar)
@@ -223,6 +246,7 @@ def _document() -> str:
   <a href="#alerts" style="color:{theme.SERIES_CPU};">Alerts</a> ·
   <a href="#actions" style="color:{theme.SERIES_CPU};">Optimize actions</a> ·
   <a href="#overhead" style="color:{theme.SERIES_CPU};">Staying out of the way</a> ·
+  <a href="#updates" style="color:{theme.SERIES_CPU};">Updates</a> ·
   <a href="#trouble" style="color:{theme.SERIES_CPU};">If something looks wrong</a>
 </p>
 
@@ -350,6 +374,24 @@ def _document() -> str:
   and cleanups carry on. It restores itself once Windows is responsive
   again.</div>
 
+<a name="updates"></a>
+<div style="{h2}">Updates</div>
+<div style="{p}"><b style="{key}">Check for updates</b> at the top of this
+  page — or in the tray menu — compares this copy against the latest
+  published release. It is a manual check: nothing runs on a timer, at
+  startup or in the background, and the app never downloads or installs
+  anything by itself. If a newer version exists it tells you what changed
+  and offers to open the download page in your browser; installing it is
+  your decision.</div>
+<div style="{p}">You are running <b style="{key}">{__version__}</b>,
+  {_INSTALL_WORDING.get(_install_kind(), "from source")}.
+  {_hint_html()}</div>
+<div style="{note}">The check makes one ordinary HTTPS request to
+  GitHub's release list and sends nothing about you or this machine — no
+  telemetry, no identifiers. On a managed corporate network it may be
+  blocked or TLS-inspected; the app says so plainly and points you at the
+  browser, which knows about the proxy when this check does not.</div>
+
 <a name="trouble"></a>
 <div style="{h2}">If something looks wrong</div>
 <ul>
@@ -408,3 +450,68 @@ def show_about(parent=None):
     box.setIcon(QMessageBox.NoIcon)
     box.setStandardButtons(QMessageBox.Close)
     box.exec()
+
+
+# -- update result ------------------------------------------------------------
+
+def show_update_result(parent, res) -> bool:
+    """Report a finished update check. Returns True if the user asked to
+    open the download page (the caller opens it — this stays UI-only).
+
+    Nothing is downloaded here by design: the user said what they wanted
+    installed, and this app does not install things behind their back.
+    """
+    box = QMessageBox(parent)
+    box.setWindowTitle("Check for updates")
+    box.setTextFormat(Qt.RichText)
+    box.setIcon(QMessageBox.NoIcon)
+    box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+    heading, body, offer_page = _update_wording(res)
+    box.setText(f'<div style="font-size:14px; font-weight:600;">{heading}</div>')
+    box.setInformativeText(body)
+    if res.notes:
+        # Release notes are markdown; show them verbatim rather than
+        # half-rendering them.
+        box.setDetailedText(f"Release notes for {res.latest}\n\n{res.notes}")
+
+    open_btn = None
+    if offer_page:
+        open_btn = box.addButton("Open download page", QMessageBox.AcceptRole)
+    box.addButton("Close", QMessageBox.RejectRole)
+    box.exec()
+    return open_btn is not None and box.clickedButton() is open_btn
+
+
+def _update_wording(res):
+    """(heading, html body, offer the download page?) for a check result."""
+    from .. import updates
+
+    hint = _hint_html()
+    if res.status == updates.AVAILABLE:
+        when = f" (published {res.published})" if res.published else ""
+        return (f"Version {res.latest} is available",
+                f"<p>You are running <b>{res.current}</b>. The latest "
+                f"release is <b>{res.latest}</b>{when}.</p>"
+                f"<p>{hint}</p>"
+                f"<p style='color:{theme.MUTED};'>Nothing has been "
+                f"downloaded. Use the button below to open the release page "
+                f"in your browser.</p>", True)
+    if res.status == updates.CURRENT:
+        return ("You are up to date",
+                f"<p>Version <b>{res.current}</b> is the latest release.</p>",
+                False)
+    if res.status == updates.AHEAD:
+        return ("This build is newer than the latest release",
+                f"<p>You are running <b>{res.current}</b>; the newest "
+                f"published release is <b>{res.latest}</b>. This is normal "
+                f"for a build made from source.</p>", True)
+    if res.status == updates.NONE:
+        return ("No releases published yet",
+                f"<p>{res.detail}</p><p>You are running "
+                f"<b>{res.current}</b>.</p>", True)
+    # unreachable / blocked / error
+    return ("Could not check for updates",
+            f"<p>{res.detail}</p>"
+            f"<p>You are running <b>{res.current}</b>. Nothing is wrong with "
+            f"this copy — only the version check failed.</p>", True)

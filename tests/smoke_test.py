@@ -361,6 +361,123 @@ def main() -> int:
         QMessageBox.exec = _real_exec
     print("about + first-run welcome OK (shown once, then suppressed)")
 
+    # -- manual update check --
+    # An update check is only worth having if the version it reports is
+    # right, so first pin down that nothing has drifted out of sync.
+    from app import updates
+    from app.ui.guide_tab import show_update_result
+
+    iss = open(os.path.join(os.path.dirname(HERE), "packaging",
+                            "installer.iss"), encoding="utf-8").read()
+    vinfo = open(os.path.join(os.path.dirname(HERE), "packaging",
+                              "version_info.txt"), encoding="utf-8").read()
+    assert f'#define AppVersion "{_ver}"' in iss, \
+        f"installer.iss fallback version disagrees with {_ver}"
+    parts = _ver.split(".")
+    assert f"filevers=({', '.join(parts)}, 0)" in vinfo, \
+        f"version_info.txt filevers disagrees with {_ver}"
+    assert f'"{_ver}.0"' in vinfo, \
+        f"version_info.txt File/ProductVersion disagrees with {_ver}"
+    print(f"version {_ver} consistent across app, installer and exe metadata")
+
+    # version ordering must be numeric, not lexical
+    assert updates.is_newer("1.10.0", "1.9.0"), "1.10.0 must beat 1.9.0"
+    assert not updates.is_newer("1.9.0", "1.10.0")
+    assert updates.is_newer("2.0.0", "1.99.99")
+    assert updates.is_newer("1.2.0", "1.2.0-rc1"), \
+        "a final release must beat its own release candidate"
+    assert not updates.is_newer("1.2.0-rc1", "1.2.0")
+    assert not updates.is_newer("1.1.0", "1.1.0"), "equal is not newer"
+    assert updates.is_newer("v1.2.0", "1.1.0"), "a 'v' prefix must be ignored"
+    assert updates.parse_version("1.2") == updates.parse_version("1.2.0"), \
+        "short and padded versions must compare equal"
+    assert updates.parse_version("garbage")[0] == (0,), "junk must not crash"
+
+    # each API outcome must map to a sane, non-crashing result
+    seen_status = {}
+    for label, payload, expect in (
+            ("newer", {"tag_name": "v99.0.0", "body": "Lots of things.",
+                       "published_at": "2026-09-01T00:00:00Z",
+                       "html_url": "https://example.invalid/r/99",
+                       "assets": [{"name": "s.exe",
+                                   "browser_download_url": "https://x/s.exe"}]},
+             updates.AVAILABLE),
+            ("same", {"tag_name": f"v{_ver}"}, updates.CURRENT),
+            ("older", {"tag_name": "v0.0.1"}, updates.AHEAD),
+            ("untagged", {}, updates.NONE)):
+        res = updates._interpret(payload)
+        assert res.status == expect, \
+            f"{label}: got {res.status}, expected {expect}"
+        assert res.current == _ver
+        seen_status[expect] = res
+    assert seen_status[updates.AVAILABLE].latest == "99.0.0"
+    assert seen_status[updates.AVAILABLE].assets == [("s.exe",
+                                                      "https://x/s.exe")]
+
+    # a real check must never raise, whatever the network does
+    unreachable = updates.check(timeout=0.2,
+                               url="https://127.0.0.1:9/nope")
+    assert unreachable.status in (updates.UNREACHABLE, updates.BLOCKED,
+                                  updates.ERROR), unreachable.status
+    assert unreachable.detail, "a failed check must explain itself"
+    assert not unreachable.ok
+    print(f"offline check degrades gracefully: {unreachable.status}")
+
+    # the result dialog must render every outcome, and only offer the
+    # download page when there is somewhere useful to go
+    _boxes.clear()
+    QMessageBox.exec = _capture
+    try:
+        for status, res in seen_status.items():
+            show_update_result(None, res)
+            assert _boxes, f"no dialog for {status}"
+            shown = _boxes[-1].text() + _boxes[-1].informativeText()
+            assert _ver in shown, f"{status} dialog omits the running version"
+        show_update_result(None, unreachable)
+        assert unreachable.detail in _boxes[-1].informativeText(), \
+            "failure dialog does not show the reason"
+        # up-to-date is the one case with nothing to download
+        assert not show_update_result(None, seen_status[updates.CURRENT]), \
+            "offered a download page when already up to date"
+    finally:
+        QMessageBox.exec = _real_exec
+
+    assert updates.install_kind() == "source", \
+        "running from source should report as such in tests"
+    assert updates.install_kind() in updates.UPGRADE_HINT, \
+        "every install kind needs upgrade advice"
+
+    # The button must be wired, must not block the GUI thread, and must
+    # always hand the button back however the check turns out. This one
+    # does hit the network, so the dialog stays stubbed out.
+    QMessageBox.exec = _capture
+    try:
+        assert win._guide.btn_updates.isEnabled()
+        win.check_for_updates()
+        assert not win._guide.btn_updates.isEnabled(), \
+            "button should disable while a check is in flight"
+        assert win._guide.btn_updates.text() == "Checking…"
+        win.check_for_updates()          # must not start a second check
+        blocked_ms = 0.0
+        deadline = time.time() + 40
+        while win._update_in_flight and time.time() < deadline:
+            spun = time.perf_counter()
+            app.processEvents()
+            blocked_ms = max(blocked_ms, (time.perf_counter() - spun) * 1000)
+            time.sleep(0.02)
+        assert not win._update_in_flight, "update check never finished"
+        assert blocked_ms < 500, \
+            f"GUI thread stalled {blocked_ms:.0f} ms — check is not async"
+    finally:
+        QMessageBox.exec = _real_exec
+    assert win._guide.btn_updates.isEnabled(), "button left disabled"
+    assert win._guide.btn_updates.text() == "Check for updates"
+    log_text = win._optimize.log.toPlainText()
+    assert "release" in log_text or "Update check" in log_text or \
+        "Up to date" in log_text, "the check left nothing in the action log"
+    print(f"update check ran off the GUI thread (max GUI stall "
+          f"{blocked_ms:.0f} ms), button restored")
+
     # -- mini mode --
     win._tabs.setCurrentIndex(0)
     win.enter_mini_mode()

@@ -86,7 +86,29 @@ if (-not (Test-Path $Iscc)) {
 Get-ChildItem (Join-Path $distDir "installer") -Filter "*-setup.exe" `
     -ErrorAction SilentlyContinue |
     Remove-Item -Force -Confirm:$false -ErrorAction SilentlyContinue
-& $Iscc /Q "packaging\installer.iss"
+# app/version.py is the single source of truth. Pass it in rather than
+# letting installer.iss keep its own copy, which silently drifts and then
+# ships an installer whose version disagrees with the running app -- which
+# would also make the in-app update check lie.
+$verLine = Select-String -Path "app\version.py" -Pattern '__version__\s*=\s*"([^"]+)"'
+if (-not $verLine) { throw "could not read __version__ from app\version.py" }
+$appVersion = $verLine.Matches[0].Groups[1].Value
+Write-Host "      version: $appVersion (from app\version.py)"
+
+# PyInstaller reads version_info.txt directly, so it cannot be injected --
+# verify it instead of shipping mismatched file metadata.
+$viExpect = ($appVersion -split '\.')[0..2] -join ', '
+$vi = Get-Content "packaging\version_info.txt" -Raw
+if ($vi -notmatch [regex]::Escape("filevers=($viExpect, 0)")) {
+    throw ("packaging\version_info.txt does not match version $appVersion " +
+           "-- expected 'filevers=($viExpect, 0)'. Update it and rebuild.")
+}
+if ($vi -notmatch [regex]::Escape("`"$appVersion.0`"")) {
+    throw ("packaging\version_info.txt File/ProductVersion does not match " +
+           "$appVersion.0. Update it and rebuild.")
+}
+
+& $Iscc /Q "/DAppVersion=$appVersion" "packaging\installer.iss"
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
 
 # --- 4. portable zip -------------------------------------------------------

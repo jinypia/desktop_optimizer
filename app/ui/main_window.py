@@ -7,22 +7,26 @@ import time
 from collections import deque
 
 import pyqtgraph as pg
-from PySide6.QtCore import QSettings, Qt, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QColor, QKeySequence, QShortcut
+from PySide6.QtCore import (
+    QSettings, Qt, QThreadPool, QTimer, QUrl, Signal, Slot,
+)
+from PySide6.QtGui import (
+    QCloseEvent, QColor, QDesktopServices, QKeySequence, QShortcut,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QTableWidget,
     QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from .. import config, optimizer
+from .. import config, optimizer, updates
 from ..analyzer import SEVERITY_RANK, Alert, Analyzer
 from ..monitor import MetricsSampler, Snapshot
 from ..util import human_bytes, human_rate
 from ..version import APP_NAME
 from . import shellguard, theme
 from .details_tab import DetailsTab
-from .guide_tab import GuideTab, show_about
+from .guide_tab import GuideTab, show_about, show_update_result
 from .mini_window import MiniWindow
 from .optimize_tab import OptimizeTab
 from .process_tab import ProcessTab
@@ -73,6 +77,7 @@ class MainWindow(QMainWindow):
         self._ui_error_notes = 0
         self._last_trim = 0.0
         self._freeze_watch = None
+        self._update_in_flight = False
         self.shell_state_changed.connect(self._on_shell_state_changed)
         # The listener only emits — never touch widgets on the caller's
         # thread. Signal emission itself is thread-safe.
@@ -141,6 +146,7 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._optimize, "Optimize")
         self._guide = GuideTab()
         self._guide.open_log_requested.connect(self.open_log_requested)
+        self._guide.check_updates_requested.connect(self.check_for_updates)
         self._tabs.addTab(self._guide, "Guide")
         self._tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -516,6 +522,52 @@ class MainWindow(QMainWindow):
 
     def show_about(self):
         show_about(self if self.isVisible() else None)
+
+    # -- manual update check -----------------------------------------------------
+    def check_for_updates(self):
+        """Ask GitHub once whether a newer release exists.
+
+        Runs on the thread pool: this is a network round trip, and a
+        managed network can leave it hanging for the full timeout. Doing it
+        on the GUI thread would freeze the window for exactly as long.
+        """
+        if self._update_in_flight:
+            return
+        self._update_in_flight = True
+        self._guide.btn_updates.setEnabled(False)
+        self._guide.btn_updates.setText("Checking…")
+        self._log_line("Checking for a newer release…")
+        worker = Worker(updates.check)
+        worker.signals.done.connect(self._update_check_done)
+        self._pool.start(worker)
+
+    def _update_check_done(self, res):
+        self._update_in_flight = False
+        self._guide.btn_updates.setEnabled(True)
+        self._guide.btn_updates.setText("Check for updates")
+        if not isinstance(res, updates.UpdateCheck):
+            # Worker turns an unexpected exception into an ActionResult
+            log.error("Update check returned %r", res)
+            self._log_line("× Update check failed — see the log.")
+            return
+
+        if res.status == updates.AVAILABLE:
+            self._log_line(f"↑ Version {res.latest} is available "
+                           f"(you have {res.current}).")
+        elif res.status == updates.CURRENT:
+            self._log_line(f"✓ Up to date ({res.current} is the latest "
+                           f"release).")
+        else:
+            self._log_line(f"Update check: {res.detail or res.status}")
+
+        # The dialog is modal, so raise the window first when the app is
+        # sitting in mini mode or the tray — otherwise the prompt appears
+        # with no visible parent behind it.
+        if not self.isVisible():
+            self.show_guide()
+        if show_update_result(self, res):
+            QDesktopServices.openUrl(QUrl(res.url))
+            self._log_line(f"Opened {res.url} in your browser.")
 
     def _maybe_retry_shell(self):
         """Probe once in a while whether the shell recovered."""

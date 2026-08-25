@@ -103,9 +103,31 @@ the folder except the log and settings described below.
 
 ### Updating
 
-Download the newer `…-setup.exe` and run it. It upgrades in place — it
-closes the running copy, replaces the files, and keeps your window and
-mini-strip preferences. No need to uninstall first.
+**To see whether there is a new version**, use **Check for updates** —
+on the Guide tab, or in the tray menu. It compares this copy against the
+latest published release and, if there is one, shows what changed and
+offers to open the download page.
+
+The check is **manual by design**. Nothing runs on a timer, at startup or
+in the background, and the app never downloads or installs anything by
+itself — consistent with the rest of the program. It makes one ordinary
+HTTPS request to GitHub's release list and sends nothing about you or the
+machine: no telemetry, no identifiers.
+
+If your network blocks or inspects HTTPS, the check says so plainly and
+points you at [the releases page](https://github.com/jinypia/desktop_optimizer/releases)
+in a browser — which knows about the corporate proxy when the check does
+not.
+
+**To install the update:**
+
+| Installed how | What to do |
+|---|---|
+| Setup program | Download the newer `…-setup.exe` and run it. It upgrades in place — closes the running copy, replaces the files, keeps your window and mini-strip preferences. No need to uninstall first. |
+| Portable ZIP | Download the new `DesktopOptimizer-portable.zip`, exit the app, unpack over the existing folder. |
+| From source | `git pull`, then `pip install -r requirements.txt` |
+
+The app detects which of the three it is and tells you the right one.
 
 ### Uninstalling
 
@@ -364,8 +386,8 @@ amber / red). Status is visible at a glance with no window open at all.
 - Hover it for a one-line CPU/memory summary.
 - Click it to reopen the dashboard.
 - Right-click for: **Open dashboard**, **Mini mode**, **Quick clean**
-  (temp files + DNS), **Open log folder**, **User guide**, **About**, and
-  **Exit**.
+  (temp files + DNS), **Open log folder**, **User guide**, **Check for
+  updates**, **About**, and **Exit**.
 
 The icon is repainted only when the displayed number actually changes
 (quantised to 2%), keeping it effectively free.
@@ -377,7 +399,8 @@ on the **Guide** tab: what each surface is for, how to read every number,
 what each of the eleven Optimize actions actually does and how risky it
 is, what triggers each alert, and how the app keeps out of your way. Also
 reachable from the tray menu, with an **About** box reporting version,
-build type, elevation state, Qt/Python versions and the log location.
+build type, elevation state, Qt/Python versions and the log location, and
+a **Check for updates** button (see [Updating](#updating)).
 
 Its alert-threshold and throttling tables are generated from
 `app/config.py` at render time rather than written by hand, so tuning a
@@ -429,8 +452,26 @@ Build work is staged on a local disk by default (`-WorkRoot`) because this
 project often lives on a network share, where writing ~150 MB of Qt
 binaries is slow.
 
-To bump the version, edit `app/version.py`, then the matching values in
-`packaging/version_info.txt` and `packaging/installer.iss`.
+### Releasing a new version
+
+`app/version.py` is the single source of truth. The build reads it and
+passes it to Inno Setup, so the installer can no longer disagree with what
+the app reports about itself — which matters now that **Check for updates**
+compares those numbers.
+
+1. Bump `__version__` in `app/version.py`.
+2. Update `packaging/version_info.txt` to match — both `filevers=(x, y, z, 0)`
+   and the `"x.y.z.0"` File/ProductVersion strings. PyInstaller reads that
+   file directly, so it cannot be injected; instead **the build fails** if
+   it disagrees, rather than silently shipping wrong metadata.
+3. Run `packaging\build.ps1`.
+4. Publish a GitHub release whose **tag is the version** (`v1.2.0` or
+   `1.2.0` — the leading `v` is ignored), and attach the setup `.exe` and
+   the portable `.zip`. The in-app check reads the tag of the newest
+   release, so an untagged or draft release will not be offered.
+
+`tests\smoke_test.py` also asserts all three files agree, so drift is
+caught before you build.
 
 ## Project layout
 
@@ -457,6 +498,7 @@ app/
   monitor.py            metrics sampler (QThread + psutil)
   procsnap.py           every process in one kernel call (see below)
   analyzer.py           degradation detection -> alerts + recommendations
+  updates.py            manual release check (never automatic)
   optimizer.py          one-click cleanup actions (user-triggered only)
   util.py               formatting helpers
   ui/
