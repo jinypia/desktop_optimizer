@@ -54,6 +54,7 @@ fully hidden app costs roughly 0.01% of an 8-core CPU. See
 
 There is a full manual **inside the app** on the Guide tab (and in the
 tray menu), so the installed build explains itself without this file.
+Release history is in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -92,7 +93,7 @@ runs as a standard user.
 > anyway**. If you prefer, verify the download first with the SHA-256
 > checksum published in the release notes:
 > ```powershell
-> Get-FileHash .\DesktopOptimizer-1.1.0-setup.exe -Algorithm SHA256
+> Get-FileHash .\DesktopOptimizer-*-setup.exe -Algorithm SHA256
 > ```
 
 ### Portable — no installation at all
@@ -151,14 +152,18 @@ Reach the log at any time from the tray menu → **Open log folder**.
 The installer is Inno Setup based, so the usual switches work:
 
 ```powershell
+# The version is part of the filename, so resolve it once rather than
+# hard-coding it into your deployment scripts.
+$setup = (Get-ChildItem .\DesktopOptimizer-*-setup.exe)[0].FullName
+
 # silent per-user install (no UI, no restart)
-.\DesktopOptimizer-1.1.0-setup.exe /VERYSILENT /NORESTART
+& $setup /VERYSILENT /NORESTART
 
 # silent, and also create the sign-in shortcut
-.\DesktopOptimizer-1.1.0-setup.exe /VERYSILENT /NORESTART /TASKS="startupicon"
+& $setup /VERYSILENT /NORESTART /TASKS="startupicon"
 
 # install for all users instead (this one does need administrator)
-.\DesktopOptimizer-1.1.0-setup.exe /VERYSILENT /ALLUSERS
+& $setup /VERYSILENT /ALLUSERS
 
 # silent uninstall
 & "$env:LOCALAPPDATA\Programs\Desktop Optimizer\unins000.exe" /VERYSILENT
@@ -465,10 +470,13 @@ compares those numbers.
    file directly, so it cannot be injected; instead **the build fails** if
    it disagrees, rather than silently shipping wrong metadata.
 3. Run `packaging\build.ps1`.
-4. Publish a GitHub release whose **tag is the version** (`v1.2.0` or
+4. Add the release's entry to `CHANGELOG.md`.
+5. Publish a GitHub release whose **tag is the version** (`v1.2.0` or
    `1.2.0` — the leading `v` is ignored), and attach the setup `.exe` and
-   the portable `.zip`. The in-app check reads the tag of the newest
-   release, so an untagged or draft release will not be offered.
+   the portable `.zip`. Paste the changelog entry into the release body:
+   that text is what **Check for updates** shows users. The in-app check
+   reads the tag of the newest release, so an untagged or draft release
+   will not be offered.
 
 `tests\smoke_test.py` also asserts all three files agree, so drift is
 caught before you build.
