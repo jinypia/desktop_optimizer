@@ -11,6 +11,7 @@ travel with the binaries.
 | [psutil](https://github.com/giampaolo/psutil) | 7.x | BSD 3-Clause |
 | [pyqtgraph](https://www.pyqtgraph.org/) | 0.14.x | MIT |
 | [NumPy](https://numpy.org/) | 2.x | BSD 3-Clause |
+| [truststore](https://github.com/sethmlarson/truststore) | 0.10.x | MIT |
 | [PyInstaller](https://pyinstaller.org/) (build tool; bootloader is bundled) | 6.x | GPL v2-or-later **with** the PyInstaller bootloader exception |
 | [Inno Setup](https://jrsoftware.org/isinfo.php) (build tool only, not distributed) | 6.x | Inno Setup License |
 

@@ -14,6 +14,15 @@ network the request may be proxied, TLS-intercepted or blocked outright,
 and urllib does not read Windows' proxy configuration the way a browser
 does. Every one of those cases is reported as "check it in your browser
 instead" with the reason, rather than a stack trace.
+
+TLS verification is delegated to Windows rather than to OpenSSL's own
+bundle. Corporate networks that inspect HTTPS install their own root CA
+into the Windows store, and those certificates are frequently not quite
+standards-perfect -- one measured here was rejected by OpenSSL 3 for
+"Basic Constraints of CA cert not marked critical" while Windows itself
+accepted it happily. Verifying the way the rest of the OS does means the
+check works wherever the browser works, instead of failing on precisely
+the managed machines this app is built for.
 """
 from __future__ import annotations
 
@@ -124,6 +133,25 @@ UPGRADE_HINT = {
 
 # -- the check ----------------------------------------------------------------
 
+def _ssl_context():
+    """Verify certificates the way Windows does, not the way OpenSSL does.
+
+    Returns None (meaning "urllib's default") if truststore is missing, so
+    a stripped-down install still works — it just reverts to OpenSSL's
+    stricter view and may report `blocked` behind an inspecting proxy.
+    """
+    try:
+        import truststore
+    except ImportError:
+        log.debug("truststore unavailable; using OpenSSL verification")
+        return None
+    try:
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except Exception:
+        log.warning("Could not build an OS trust context", exc_info=True)
+        return None
+
+
 def check(timeout: float = TIMEOUT_S, url: str = API_LATEST) -> UpdateCheck:
     """Ask GitHub for the latest release. Blocking — call it on a worker
     thread. Never raises; every failure comes back as a status."""
@@ -133,7 +161,8 @@ def check(timeout: float = TIMEOUT_S, url: str = API_LATEST) -> UpdateCheck:
         "Accept": "application/vnd.github+json",
     })
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout,
+                                    context=_ssl_context()) as resp:
             payload = json.loads(resp.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
         return _http_failure(e)

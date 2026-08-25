@@ -39,7 +39,11 @@ a = Analysis(
     pathex=[os.path.abspath(".")],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    # truststore is imported lazily inside app.updates, and it picks its
+    # platform backend dynamically -- name the modules so the frozen build
+    # actually contains them.
+    hiddenimports=["truststore", "truststore._windows", "truststore._api",
+                   "truststore._ssl_constants"],
     excludes=EXCLUDES,
     noarchive=False,
 )
