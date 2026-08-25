@@ -13,7 +13,7 @@
 ; disagree with what the app reports about itself. The fallback below only
 ; applies when compiling this script by hand.
 #ifndef AppVersion
-  #define AppVersion "1.1.0"
+  #define AppVersion "1.2.0"
 #endif
 #define AppPublisher "jinypia"
 #define AppURL "https://github.com/jinypia/desktop_optimizer"
