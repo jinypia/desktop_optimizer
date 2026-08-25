@@ -1,11 +1,59 @@
 # Desktop Optimizer
 
-A lightweight Windows desktop app that monitors system performance in real
-time, alerts you when it degrades, and offers safe one-click cleanup
-actions. Built with Python, PySide6 (Qt), pyqtgraph, and psutil.
+A lightweight Windows performance monitor. It watches CPU, memory, disk,
+network and responsiveness continuously, tells you when the machine
+starts to degrade **and which process is responsible**, and gives you
+safe one-click ways to get room back — without a reboot.
 
-The app **never optimizes automatically** — it detects and recommends;
-every action runs only when you click it.
+Built with Python, PySide6 (Qt), pyqtgraph and psutil.
+
+## What it is for
+
+Windows rarely tells you *why* it got slow. Task Manager shows you a
+moment; it does not watch, it does not remember, and it does not say
+"this has been bad for the last twenty seconds, and here is the process
+doing it." That is the gap this fills:
+
+- **It watches continuously** and only raises an alert when a problem is
+  *sustained*, so you get one alert per episode instead of noise on every
+  spike.
+- **It names the culprit.** Every alert arrives with the specific
+  processes responsible and concrete next steps.
+- **It measures what you actually feel.** Alongside CPU and memory it
+  tracks how late its own timer runs — if Windows cannot service a timer
+  on time, it is not servicing your clicks either.
+- **It offers a way out that is not a reboot** — eleven one-click
+  actions, each one reporting exactly what it did.
+
+## Two promises
+
+**Nothing happens on its own.** The app detects and recommends; every
+cleanup action runs only when you click it. Nothing is scheduled, and
+nothing is changed behind your back.
+
+**It refuses to become the problem.** A monitor that costs you
+performance defeats itself, so this one throttles hard the moment you
+stop looking at it, reports its own CPU and memory cost in the UI, and
+raises a warning *against itself* if it ever exceeds its budget. Reading
+every process on the machine takes one kernel call and about 2 ms; a
+fully hidden app costs roughly 0.01% of an 8-core CPU. See
+[The monitor's own overhead](#the-monitors-own-overhead).
+
+## At a glance
+
+| | |
+|---|---|
+| **Starts as** | a compact strip docked in your taskbar — double-click for the dashboard |
+| **Dashboard** | four metric cards, a vitals strip, and ~6 minutes of live charts |
+| **Details** | per-core CPU, kernel activity, every volume, every network interface |
+| **Processes** | full list with owner, threads and priority — end, end tree, or reprioritise |
+| **Optimize** | eleven cleanup and recovery actions, with an action log |
+| **Guide** | the whole manual, in the app |
+| **Alerts on** | sustained high CPU, memory pressure, disk saturation, UI lag, full drives |
+| **Self-defence** | pauses its own shell traffic if Windows gets slow, and restores automatically |
+
+There is a full manual **inside the app** on the Guide tab (and in the
+tray menu), so the installed build explains itself without this file.
 
 ---
 
@@ -120,8 +168,10 @@ pip config set global.trusted-host "pypi.org files.pythonhosted.org"
 
 ## First run
 
-The app opens as a **compact strip docked in the taskbar** (mini mode),
-plus an icon in the notification area showing live CPU load.
+On the very first launch a short welcome dialog explains what the app is
+and where it went — because it opens as a **compact strip docked in the
+taskbar** (mini mode) rather than a window, plus an icon in the
+notification area showing live CPU load.
 
 - **Double-click the strip** for the full dashboard.
 - **Closing the dashboard returns to the strip** — it does not exit.
@@ -129,8 +179,13 @@ plus an icon in the notification area showing live CPU load.
 
 ## Using the program
 
-The window has four tabs on the left and an always-visible health panel on
+The window has five tabs on the left and an always-visible health panel on
 the right (status, alerts with recommendations, top CPU processes).
+
+Everything below is also available **inside the app** on the **Guide**
+tab — reachable from the tray menu too — so the installed build needs no
+documentation alongside it. The Guide generates its threshold and cadence
+tables from `app/config.py`, so it cannot drift out of date.
 
 ### Dashboard tab
 
@@ -309,10 +364,25 @@ amber / red). Status is visible at a glance with no window open at all.
 - Hover it for a one-line CPU/memory summary.
 - Click it to reopen the dashboard.
 - Right-click for: **Open dashboard**, **Mini mode**, **Quick clean**
-  (temp files + DNS), **Open log folder**, and **Exit**.
+  (temp files + DNS), **Open log folder**, **User guide**, **About**, and
+  **Exit**.
 
 The icon is repainted only when the displayed number actually changes
 (quantised to 2%), keeping it effectively free.
+
+### Guide tab — the manual, in the app
+
+The installed build ships no README next to it, so the whole manual lives
+on the **Guide** tab: what each surface is for, how to read every number,
+what each of the eleven Optimize actions actually does and how risky it
+is, what triggers each alert, and how the app keeps out of your way. Also
+reachable from the tray menu, with an **About** box reporting version,
+build type, elevation state, Qt/Python versions and the log location.
+
+Its alert-threshold and throttling tables are generated from
+`app/config.py` at render time rather than written by hand, so tuning a
+threshold updates the documentation with it. The document is built on
+first view and cached, so never opening the tab costs nothing.
 
 ## Tuning thresholds
 
@@ -398,6 +468,7 @@ app/
     details_tab.py      professional detail view
     process_tab.py      full process list + controls
     optimize_tab.py     one-click action catalog + log
+    guide_tab.py        in-app manual + About (tables generated from config)
     workers.py          thread-pool worker plumbing
     tray.py             tray icon, menu, notifications
 ```

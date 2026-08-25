@@ -83,6 +83,9 @@ def main() -> int:
     tray.mini_requested.connect(window.enter_mini_mode)
     tray.quick_clean_requested.connect(window.run_quick_clean)
     tray.open_log_requested.connect(lambda: os.startfile(diag.LOG_DIR))
+    tray.guide_requested.connect(window.show_guide)
+    tray.about_requested.connect(window.show_about)
+    window.open_log_requested.connect(lambda: os.startfile(diag.LOG_DIR))
     window.set_tray(tray)
     tray.show()
 
@@ -144,6 +147,9 @@ def main() -> int:
         on_repeated_freeze=window.on_repeated_freeze)
     window.set_freeze_watch(freeze_watch)
     freeze_watch.start()
+    # First launch only: the app starts as a strip in the taskbar, which is
+    # easy to miss entirely without a word of explanation.
+    window.maybe_show_welcome()
     return app.exec()
 
 

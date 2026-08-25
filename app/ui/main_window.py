@@ -11,16 +11,18 @@ from PySide6.QtCore import QSettings, Qt, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QLabel, QListWidget,
-    QListWidgetItem, QMainWindow, QPushButton, QTableWidget, QTableWidgetItem,
-    QTabWidget, QVBoxLayout, QWidget,
+    QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QTableWidget,
+    QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .. import config, optimizer
 from ..analyzer import SEVERITY_RANK, Alert, Analyzer
 from ..monitor import MetricsSampler, Snapshot
 from ..util import human_bytes, human_rate
+from ..version import APP_NAME
 from . import shellguard, theme
 from .details_tab import DetailsTab
+from .guide_tab import GuideTab, show_about
 from .mini_window import MiniWindow
 from .optimize_tab import OptimizeTab
 from .process_tab import ProcessTab
@@ -44,6 +46,7 @@ class MainWindow(QMainWindow):
     sampler_stalled = Signal()      # main() restarts the sampler on this
     view_mode_changed = Signal(str)  # "dashboard" | "mini" | "hidden"
     quit_requested = Signal()       # from the mini strip's context menu
+    open_log_requested = Signal()   # Guide tab / tray -> main() opens it
     # Emitted from whichever thread trips the shell guard (often the freeze
     # watchdog). Connected to a slot on this object, so Qt queues it onto
     # the GUI thread — touching widgets from the watchdog thread is a
@@ -136,6 +139,9 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._processes, "Processes")
         self._optimize = OptimizeTab(self._run_action, self._quit_for_elevation)
         self._tabs.addTab(self._optimize, "Optimize")
+        self._guide = GuideTab()
+        self._guide.open_log_requested.connect(self.open_log_requested)
+        self._tabs.addTab(self._guide, "Guide")
         self._tabs.currentChanged.connect(self._on_tab_changed)
 
         mini_btn = QPushButton("▭  Mini mode")
@@ -463,6 +469,54 @@ class MainWindow(QMainWindow):
     def set_freeze_watch(self, watch):
         self._freeze_watch = watch
 
+    # -- first run ---------------------------------------------------------------
+    def maybe_show_welcome(self):
+        """Introduce the app once, on the very first launch.
+
+        The app opens as a small strip docked in the taskbar, which is easy
+        to miss and easy to misread as "nothing happened" — so say what it
+        is, where it went, and that it will not touch anything by itself.
+        """
+        if self._settings.value("intro/shown", False, type=bool):
+            return
+        # Recorded before the dialog opens: if anything goes wrong in here,
+        # the greeting is skipped rather than repeated every launch.
+        self._settings.setValue("intro/shown", True)
+
+        box = QMessageBox(self)
+        box.setWindowTitle(f"Welcome to {APP_NAME}")
+        box.setTextFormat(Qt.RichText)
+        box.setIcon(QMessageBox.NoIcon)
+        box.setText(
+            f'<div style="font-size:15px; font-weight:600;">'
+            f'{APP_NAME} is now watching this PC</div>')
+        box.setInformativeText(
+            "<p>It tracks CPU, memory, disk, network and responsiveness "
+            "continuously, and tells you when the machine starts to "
+            "degrade — including which process is to blame.</p>"
+            "<p><b>It is running as a small strip docked in your "
+            "taskbar</b>, next to the clock. Double-click that strip for "
+            "the full dashboard, or right-click it for options. There is "
+            "also an icon in the notification area showing live CPU load.</p>"
+            "<p><b>Nothing is cleaned or changed automatically.</b> The "
+            "Optimize tab has one-click actions, and each runs only when "
+            "you click it.</p>"
+            "<p>The <b>Guide</b> tab explains everything in detail.</p>")
+        box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        open_guide = box.addButton("Open the guide", QMessageBox.AcceptRole)
+        box.addButton("Got it", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_guide:
+            self.show_guide()
+
+    def show_guide(self):
+        """Bring up the dashboard on the Guide tab."""
+        self.exit_mini_mode()
+        self._tabs.setCurrentWidget(self._guide)
+
+    def show_about(self):
+        show_about(self if self.isVisible() else None)
+
     def _maybe_retry_shell(self):
         """Probe once in a while whether the shell recovered."""
         if shellguard.guard.due_for_retry():
@@ -681,7 +735,7 @@ class MainWindow(QMainWindow):
             f"app cost: {snap.self_cpu:.1f}% CPU · "
             f"{human_bytes(snap.self_rss)}")
 
-    SELF_CPU_BUDGET = 5.0     # % of total machine CPU, sustained ~60 s
+    SELF_CPU_BUDGET = config.SELF_CPU_BUDGET   # % of machine, sustained ~60 s
 
     def _watch_self_overhead(self, snap: Snapshot):
         """The monitor must never become its own performance problem."""

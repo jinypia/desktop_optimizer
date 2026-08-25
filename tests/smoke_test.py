@@ -18,9 +18,12 @@ os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from PySide6.QtGui import QFont                       # noqa: E402
-from PySide6.QtWidgets import QApplication            # noqa: E402
+from PySide6.QtGui import QFont                          # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox   # noqa: E402
 
+from app import config, diag, optimizer                  # noqa: E402
+from app.analyzer import RULE_TITLES                     # noqa: E402
+from app.monitor import MetricsSampler                   # noqa: E402
 from app.monitor import ProcInfo, Snapshot, VolumeInfo   # noqa: E402
 from app.ui import theme                                 # noqa: E402
 from app.ui.main_window import MainWindow                # noqa: E402
@@ -257,8 +260,8 @@ def main() -> int:
           f"handles peak: {max(r.handles for r in rows):,}")
 
     # -- tabs --
-    assert win._tabs.count() == 4, f"expected 4 tabs, got {win._tabs.count()}"
-    names = ["dashboard", "details", "processes", "optimize"]
+    assert win._tabs.count() == 5, f"expected 5 tabs, got {win._tabs.count()}"
+    names = ["dashboard", "details", "processes", "optimize", "guide"]
     for idx, name in enumerate(names):
         win._tabs.setCurrentIndex(idx)
         app.processEvents()
@@ -281,6 +284,82 @@ def main() -> int:
         win.grab().save(os.path.join(HERE, f"tab_{name}.png"))
 
     print("tabs OK — screenshots written to", HERE)
+
+    # -- the in-app manual --
+    # The installed build ships no README, so the Guide has to carry the
+    # explanation. Its numbers are generated from config so they cannot
+    # drift; assert exactly that rather than the prose around them.
+    guide = win._guide
+    assert guide._rendered, "guide did not render when its tab was shown"
+    html = guide._view.toPlainText()
+    assert len(html) > 3000, f"guide suspiciously short ({len(html)} chars)"
+
+    for rule in config.RULES:
+        assert RULE_TITLES[rule.rule_id] in html, \
+            f"guide never mentions the {rule.rule_id} alert"
+        assert f"{rule.warn_at:g}{rule.unit}" in html, \
+            f"guide omits the warning threshold for {rule.rule_id}"
+        assert f"{rule.critical_at:g}{rule.unit}" in html, \
+            f"guide omits the critical threshold for {rule.rule_id}"
+    for interval in (config.SAMPLE_INTERVAL_S, config.SAMPLE_INTERVAL_MINI_S,
+                     config.SAMPLE_INTERVAL_BG_S):
+        assert f"every {interval:g} s" in html, \
+            f"guide omits the {interval}s sampling cadence"
+    assert f"{config.SELF_CPU_BUDGET:g}%" in html, \
+        "guide omits the app's own CPU budget"
+    assert str(optimizer.TEMP_MIN_AGE_H) in html, \
+        "guide omits the temp-file age cutoff"
+    assert str(config.DISK_FULL_WARN) in html, "guide omits the disk-full mark"
+
+    # every Optimize action the user can click must be documented
+    documented = 0
+    for attr in dir(win._optimize):
+        if not attr.startswith("btn_"):
+            continue
+        label = getattr(win._optimize, attr).text().split("  ·")[0].strip()
+        # buttons carry an "(admin)" hint the manual states in prose
+        label = label.replace("  (admin)", "")
+        assert label.replace("&&", "&") in html.replace("&&", "&"), \
+            f"Optimize button {label!r} is not explained in the guide"
+        documented += 1
+    assert documented >= 9, f"only checked {documented} action buttons"
+    print(f"guide OK — {len(html):,} chars, thresholds generated from "
+          f"config, {documented} actions documented")
+
+    # About must not raise, and must report the real environment
+    from app.ui.guide_tab import show_about
+    from app.version import __version__ as _ver
+    _boxes = []
+    _real_exec = QMessageBox.exec
+
+    def _capture(self):                      # don't block the test on modals
+        _boxes.append(self)
+        return QMessageBox.Close
+
+    QMessageBox.exec = _capture
+    try:
+        show_about(None)
+        assert _boxes, "About dialog never opened"
+        text = _boxes[-1].text() + _boxes[-1].informativeText()
+        assert _ver in text, "About omits the version"
+        assert "MIT" in text, "About omits the licence"
+        assert diag.LOG_DIR in text, "About omits the log location"
+
+        # first-run welcome: shows once, then never again
+        win._settings.setValue("intro/shown", False)
+        _boxes.clear()
+        win.maybe_show_welcome()
+        assert _boxes, "first-run welcome never appeared"
+        welcome = _boxes[-1].informativeText()
+        assert "taskbar" in welcome, "welcome does not say where the app went"
+        assert "automatically" in welcome, \
+            "welcome does not promise it changes nothing on its own"
+        _boxes.clear()
+        win.maybe_show_welcome()
+        assert not _boxes, "welcome reappeared on a later launch"
+    finally:
+        QMessageBox.exec = _real_exec
+    print("about + first-run welcome OK (shown once, then suppressed)")
 
     # -- mini mode --
     win._tabs.setCurrentIndex(0)
@@ -316,8 +395,6 @@ def main() -> int:
     print(f"restore OK — {buffered} samples of history preserved")
 
     # -- three-tier throttling --
-    from app import config
-    from app.monitor import MetricsSampler
     sampler = MetricsSampler()
     assert sampler.interval() == config.SAMPLE_INTERVAL_S
     sampler.set_mode("mini")

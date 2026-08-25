@@ -17,6 +17,10 @@ PROC_SCAN_EVERY_BG = 8
 VOLUME_SCAN_EVERY = 10       # per-drive disk_usage every Nth cycle
 FREQ_SCAN_EVERY = 10         # cpu_freq() every Nth cycle (slow on Windows)
 
+# The app polices its own cost: if it averages more than this share of the
+# machine's CPU over ~60 s it raises a warning against itself.
+SELF_CPU_BUDGET = 5.0        # % of total machine CPU
+
 # Volume fullness is checked per drive on every sample (no sustain window)
 DISK_FULL_WARN = 90          # % used
 DISK_FULL_CRITICAL = 97
