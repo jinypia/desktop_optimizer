@@ -44,8 +44,16 @@ reconstructed from the commit history.
 - **Check for updates** — manual only, on the Guide tab and in the tray
   menu. One HTTPS request to the GitHub release list, only when asked; no
   telemetry, no timer, no background polling, and it never downloads or
-  installs anything. Blocked, proxied and TLS-inspected networks each get
-  a specific explanation instead of a generic failure.
+  installs anything.
+
+  Certificates are verified through the **Windows** trust store rather
+  than OpenSSL's, so the check works behind the HTTPS-inspecting proxies
+  common on managed networks. Without that it failed on exactly those
+  machines: a corporate root CA measured here was rejected by OpenSSL 3
+  for *"Basic Constraints of CA cert not marked critical"* while Windows
+  accepted it. Networks that genuinely block the request, or are simply
+  offline, still get a specific explanation and a pointer to the browser
+  rather than a generic failure.
 - **Reduced mode (automatic)** — everything the app sends to the Windows
   shell (tray icon, tooltip, toasts, taskbar position checks) is a
   synchronous call that blocks whenever Explorer is busy; a single toast
