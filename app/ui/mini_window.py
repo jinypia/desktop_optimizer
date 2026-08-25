@@ -131,30 +131,61 @@ class MiniWindow(QWidget):
         return self._docked
 
     def set_docked(self, docked: bool, announce: bool = True):
-        """Docked = pinned into the taskbar band beside the tray cluster."""
+        """Docked = pinned into the taskbar band beside the tray cluster.
+
+        `docked` is the user's *intent*, recorded even when the taskbar
+        cannot be used this instant — see dock_to_taskbar.
+        """
+        self._docked = docked
         if docked:
-            if not self.dock_to_taskbar():
-                return
+            self.dock_to_taskbar()
         else:
-            self._docked = False
             self._dock_timer.stop()
         if announce:
             self.docked_changed.emit(self._docked)
 
     def dock_to_taskbar(self) -> bool:
-        """Move into the taskbar slot. False if the OS offers no room."""
+        """Move into the taskbar slot. False if there is no room *right now*.
+
+        A missing slot is temporary, not permanent. The taskbar disappears
+        while it is auto-hidden, while a fullscreen app covers it, and
+        during an Explorer restart. Giving up on docking at the first such
+        moment left the strip stranded at a stale position for the rest of
+        the session — parked where the tray cluster used to end, drifting
+        further out of place with every icon that came or went, and
+        impossible to find if that spot was off screen. So the intent is
+        kept and the timer keeps retrying; only the user dragging it away
+        or unticking the menu item actually undocks it.
+        """
         pos = taskbar_slot.dock_position(self.size(), self.screen())
         if pos is None:
-            log.info("No taskbar slot available — staying floating")
-            self._docked = False
-            self._dock_timer.stop()
+            log.info("No taskbar slot right now — will keep trying "
+                     "(every %.0fs)", DOCK_KEEP_MS / 1000.0)
+            # Never leave it somewhere nobody can see it.
+            if not self._is_on_screen():
+                log.info("Strip was off screen — parking it where it can "
+                         "be reached")
+                self.park_bottom_right()
+            if self.isVisible():
+                self._dock_timer.start()
             return False
         self.move(pos)
-        if not self._docked:
-            self._docked = True
         if self.isVisible():
             self._dock_timer.start()
         return True
+
+    def _is_on_screen(self) -> bool:
+        """True if the strip is fully inside some screen's usable area.
+
+        A strip half a desktop away is as good as gone: it has no taskbar
+        button and no alt-tab entry, so an unreachable position leaves the
+        tray icon as the only way back into the app.
+        """
+        frame = self.frameGeometry()
+        for screen in QGuiApplication.screens():
+            if screen.availableGeometry().contains(frame):
+                return True
+        return False
 
     def _keep_docked(self):
         """Follow the taskbar: its size changes as tray icons come and go,

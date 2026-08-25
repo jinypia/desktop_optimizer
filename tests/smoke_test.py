@@ -603,6 +603,44 @@ def main() -> int:
     print(f"docking OK — strip {mini.width()}x{mini.height()} "
           f"fits a {bar.height()}px taskbar")
 
+    # A taskbar that is briefly unavailable — auto-hidden, covered by a
+    # fullscreen app, or mid-Explorer-restart — must not permanently
+    # undock the strip. It used to: one such moment stranded it at a stale
+    # position with no taskbar button and no alt-tab entry, i.e. invisible.
+    from PySide6.QtCore import QPoint
+    real_dock_position = taskbar_slot.dock_position
+    mini.show()
+    mini.set_docked(True, announce=False)
+    assert mini.is_docked(), "should start docked for this check"
+
+    taskbar_slot.dock_position = lambda *_a, **_k: None   # taskbar vanishes
+    mini.dock_to_taskbar()
+    assert mini.is_docked(), \
+        "a transient missing taskbar must not undock the strip"
+    assert mini._dock_timer.isActive(), \
+        "the retry timer must keep running so docking can recover"
+    assert mini._is_on_screen(), \
+        "with no slot the strip must still be somewhere reachable"
+    mini._keep_docked()                       # must also tolerate it
+    assert mini.is_docked(), "_keep_docked must not undock either"
+
+    taskbar_slot.dock_position = lambda size, screen: QPoint(1234, 2000)
+    mini._keep_docked()                       # taskbar comes back
+    assert mini.pos() == QPoint(1234, 2000), \
+        f"strip did not re-dock once a slot reappeared: {mini.pos()}"
+    assert mini.is_docked()
+    print("transient taskbar loss no longer strands the strip")
+
+    # ...but an explicit undock is still respected
+    mini.set_docked(False, announce=False)
+    assert not mini.is_docked(), "explicit undock must still work"
+    assert not mini._dock_timer.isActive(), \
+        "undocked strip must not keep polling the shell"
+    taskbar_slot.dock_position = real_dock_position
+    mini.set_docked(True, announce=False)
+    mini.hide()
+    print("explicit undock still honoured (no shell polling while floating)")
+
     # -- proactive self-healing when the shell blocks us --
     from app.ui import shellguard
     from app.ui.shellguard import guard
