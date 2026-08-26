@@ -414,6 +414,26 @@ def main() -> int:
     assert seen_status[updates.AVAILABLE].assets == [("s.exe",
                                                       "https://x/s.exe")]
 
+    # Where the button sends you matters as much as what it says. The API
+    # hands back the latest release's OWN page, which is the right target
+    # only when that release is an upgrade -- pointing someone already on a
+    # newer build at an older release reads as "download this".
+    assert seen_status[updates.AVAILABLE].url == "https://example.invalid/r/99", \
+        "an available update must link to that release's page"
+    ahead = updates._interpret({
+        "tag_name": "v0.0.1",
+        "html_url": "https://example.invalid/r/old"})
+    assert ahead.status == updates.AHEAD
+    assert ahead.url == updates.RELEASES_PAGE, \
+        (f"when ahead, must link to the release list, not the older "
+         f"release: {ahead.url}")
+    assert "/releases/tag/" not in ahead.url, \
+        "must never deep-link a superseded release as a download"
+    for st in (updates.NONE, updates.UNREACHABLE, updates.BLOCKED,
+               updates.ERROR):
+        assert updates.UpdateCheck(status=st).url == updates.RELEASES_PAGE, \
+            f"{st} must fall back to the release list"
+
     # a real check must never raise, whatever the network does
     unreachable = updates.check(timeout=0.2,
                                url="https://127.0.0.1:9/nope")

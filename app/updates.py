@@ -221,13 +221,17 @@ def _interpret(payload: dict) -> UpdateCheck:
               if a.get("browser_download_url")]
     latest = tag.lstrip("vV")
 
+    # `html_url` is the *latest release's own* page, which is only the
+    # right destination when that release is actually an upgrade. Sending
+    # someone who already runs a newer build to an older release's page
+    # reads as "download this" and is worse than useless.
     if is_newer(latest, __version__):
-        status = AVAILABLE
+        status, url = AVAILABLE, page
     elif is_newer(__version__, latest):
-        status = AHEAD
+        status, url = AHEAD, RELEASES_PAGE
     else:
-        status = CURRENT
+        status, url = CURRENT, page
     log.info("Update check: running %s, latest published %s -> %s",
              __version__, latest, status)
     return UpdateCheck(status=status, latest=latest, notes=notes,
-                       published=published, url=page, assets=assets)
+                       published=published, url=url, assets=assets)

@@ -477,7 +477,12 @@ def show_update_result(parent, res) -> bool:
 
     open_btn = None
     if offer_page:
-        open_btn = box.addButton("Open download page", QMessageBox.AcceptRole)
+        # "Download" only makes sense when there is something newer to get;
+        # otherwise the destination is just the release list.
+        from .. import updates
+        label = ("Open download page" if res.status == updates.AVAILABLE
+                 else "Open releases page")
+        open_btn = box.addButton(label, QMessageBox.AcceptRole)
     box.addButton("Close", QMessageBox.RejectRole)
     box.exec()
     return open_btn is not None and box.clickedButton() is open_btn
@@ -505,7 +510,11 @@ def _update_wording(res):
         return ("This build is newer than the latest release",
                 f"<p>You are running <b>{res.current}</b>; the newest "
                 f"published release is <b>{res.latest}</b>. This is normal "
-                f"for a build made from source.</p>", True)
+                f"for a build made from source, or before a release has "
+                f"been published.</p>"
+                f"<p style='color:{theme.MUTED};'>There is nothing to "
+                f"download — the button below opens the release list, not "
+                f"the older {res.latest} release.</p>", True)
     if res.status == updates.NONE:
         return ("No releases published yet",
                 f"<p>{res.detail}</p><p>You are running "
