@@ -281,6 +281,38 @@ def main() -> int:
                                f"after {time.time() - started:.0f}s")
             print(f"process scan found {rows} processes "
                   f"in {time.time() - started:.1f}s")
+
+            # The Processes table froze the GUI for 68 SECONDS per refresh
+            # because columns 1-7 used ResizeToContents, which re-measures
+            # the whole column on every setItem. Timing cannot catch this
+            # offscreen -- the same code measured 49 ms here and 68,122 ms
+            # on a real display -- so pin the structural cause instead.
+            from PySide6.QtCore import Qt
+            from PySide6.QtWidgets import QHeaderView
+
+            from app.ui.process_tab import COLS
+            _hdr = win._processes._table.horizontalHeader()
+            for _c in range(1, len(COLS)):
+                _mode = _hdr.sectionResizeMode(_c)
+                assert _mode != QHeaderView.ResizeToContents, (
+                    f"column {_c} ({COLS[_c]}) is ResizeToContents again — "
+                    f"that re-measures the column on every setItem and "
+                    f"freezes the window for tens of seconds per refresh")
+            assert _hdr.sectionResizeMode(0) == QHeaderView.Stretch, \
+                "the Name column should still absorb spare width"
+
+            # Cells must be updated in place, not rebuilt every refresh.
+            _t = win._processes._table
+            _before = _t.item(0, 0)
+            win._processes._populate([
+                {"pid": _t.item(r, 0).data(Qt.UserRole) or r + 1,
+                 "name": "x.exe", "user": "u", "cpu": 1.0, "rss": 1 << 20,
+                 "threads": 3, "prio": "Normal", "started": 0.0}
+                for r in range(_t.rowCount())])
+            assert _t.item(0, 0) is _before, \
+                "items are being recreated instead of updated in place"
+            assert _t.item(0, 0).text() == "x.exe", "in-place text not applied"
+            print("process table: no ResizeToContents columns, items reused")
         win.grab().save(os.path.join(HERE, f"tab_{name}.png"))
 
     print("tabs OK — screenshots written to", HERE)

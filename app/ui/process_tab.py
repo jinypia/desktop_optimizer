@@ -83,6 +83,7 @@ class ProcessTab(QWidget):
         # sampler thread's, which is why no locking is needed here.
         self._scanner = ProcessScanner()
         self._user_cache = {}          # (pid, create_ts) -> account name
+        self._sized = False            # columns auto-sized once, not per scan
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 8, 4, 4)
@@ -124,8 +125,14 @@ class ProcessTab(QWidget):
         t.setShowGrid(False)
         header = t.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
+        # Interactive, NOT ResizeToContents. That mode re-measures the whole
+        # column on every setItem, so refreshing ~350 rows x 8 columns cost
+        # around a million font-metric computations -- measured at 68 s per
+        # refresh on a 352-process machine, against a 3 s refresh timer, i.e.
+        # a permanently frozen window. Columns are auto-sized once after the
+        # first scan instead (see _populate) and stay user-resizable.
         for c in range(1, len(COLS)):
-            header.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(c, QHeaderView.Interactive)
         t.sortByColumn(3, Qt.DescendingOrder)     # CPU% desc by default
         self._table = t
         lay.addWidget(t, 1)
@@ -160,10 +167,19 @@ class ProcessTab(QWidget):
         self._populate(rows)
 
     def _populate(self, rows):
+        """Refresh the table in place.
+
+        Cells are updated rather than replaced: this runs every few seconds,
+        and rebuilding ~2800 QTableWidgetItems each time was pure allocator
+        churn. Text is only written when it actually changed, which is most
+        cells most of the time — PIDs, names, owners and start times never
+        move.
+        """
         t = self._table
         selected_pid = self.selected_pid()
         t.setSortingEnabled(False)
-        t.setRowCount(len(rows))
+        if t.rowCount() != len(rows):
+            t.setRowCount(len(rows))
         for r, d in enumerate(rows):
             started = (time.strftime("%m-%d %H:%M",
                                      time.localtime(d["started"]))
@@ -179,19 +195,33 @@ class ProcessTab(QWidget):
                 (started, d["started"]),
             )
             for c, (text, num) in enumerate(cells):
-                item = _NumItem() if num is not None else QTableWidgetItem()
-                item.setText(text)
+                item = t.item(r, c)
+                if item is None:
+                    item = _NumItem() if num is not None else QTableWidgetItem()
+                    if num is not None:
+                        item.setTextAlignment(
+                            Qt.AlignRight | Qt.AlignVCenter)
+                    t.setItem(r, c, item)
+                if item.text() != text:
+                    item.setText(text)
+                # Sorting keys and the pid that rides on column 0 must be
+                # rewritten every pass: after a re-sort, row r holds a
+                # different process than it did last time.
                 if num is not None:
                     item.setData(Qt.UserRole, num)
-                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 if c == 0:
-                    item.setData(Qt.UserRole, d["pid"])   # pid rides on col 0
-                t.setItem(r, c, item)
+                    item.setData(Qt.UserRole, d["pid"])
         t.setSortingEnabled(True)
         self._apply_filter()
         if selected_pid is not None:
             self._reselect(selected_pid)
         self._count_label.setText(f"{len(rows):,} processes")
+        # One-off auto-size once there is real content to measure. Doing it
+        # per refresh is what made the window freeze.
+        if not self._sized and rows:
+            self._sized = True
+            for c in range(1, len(COLS)):
+                t.resizeColumnToContents(c)
 
     def _apply_filter(self):
         needle = self._search.text().strip().lower()
