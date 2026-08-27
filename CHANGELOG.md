@@ -7,6 +7,32 @@ top; paste the relevant section into the GitHub release body, since
 Versions before 1.2.0 were never tagged, so their entries below are
 reconstructed from the commit history.
 
+## 1.2.1 — 2026-08-27
+
+### Fixed
+
+- **The Processes tab froze the window for over a minute at a time.**
+  Opening it left the interface unresponsive, recovering only to freeze
+  again a few seconds later. Columns were set to `ResizeToContents`, which
+  makes Qt re-measure the entire column on every cell write — roughly a
+  million font-metric computations per refresh at ~350 processes, against
+  a 3-second refresh timer.
+
+  | Table refresh | Before | After |
+  |---|---|---|
+  | 352 processes, real display | 68,122 ms | 74 ms |
+
+  Columns are now auto-sized once after the first scan and stay
+  user-resizable, and cells are updated in place instead of rebuilding
+  ~2,800 of them every few seconds.
+
+  Two notes for anyone reading the diff: reusing the cells *alone* made it
+  measurably **worse** (87 s) while the resize mode was still on — the
+  resize mode was the entire cost. And this bug is invisible to the
+  offscreen platform the test suite uses, which measured the same code at
+  49 ms against 68,122 ms on a real display, so the regression test
+  asserts the column configuration rather than timing.
+
 ## 1.2.0 — 2026-08-25
 
 ### Faster
