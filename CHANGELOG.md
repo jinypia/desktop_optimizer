@@ -75,6 +75,21 @@ reconstructed from the commit history.
   disconnected, with nothing watching to bring it back.
 - The mini strip stopped re-asserting its z-order once docked, so it could
   end up permanently buried behind another window.
+- **A momentarily missing taskbar permanently un-docked the strip.** The
+  taskbar is routinely unavailable for an instant — auto-hidden, covered
+  by a fullscreen app, mid-Explorer-restart — and one such moment made the
+  strip give up docking for the whole session, freezing it where the tray
+  cluster happened to end and drifting further out of place with every
+  icon that came or went. Measured 319 px off target on the machine where
+  it was found. The docking intent now survives a transient failure, keeps
+  retrying, and the strip is parked somewhere reachable rather than left
+  where nobody can see it.
+- **"Check for updates" could offer an older release as a download.** The
+  button used the latest release's own page for every outcome, so a build
+  newer than the newest published release linked to that older release —
+  reading as "download this" and walking the user backwards a version. It
+  now links to a specific release only when that release is genuinely an
+  upgrade.
 
 ### Build
 
